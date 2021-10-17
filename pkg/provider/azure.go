@@ -17,6 +17,7 @@ limitations under the License.
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -30,8 +31,10 @@ import (
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/adal"
 	"github.com/Azure/go-autorest/autorest/azure"
+	"golang.org/x/time/rate"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -41,7 +44,6 @@ import (
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/flowcontrol"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
 
@@ -68,6 +70,7 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssvmclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/zoneclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/batch"
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
@@ -897,10 +900,10 @@ func initDiskControllers(az *Cloud) error {
 	// Common controller contains the function
 	// needed by both blob disk and managed disk controllers
 
-	qps := float32(defaultAtachDetachDiskQPS)
-	bucket := defaultAtachDetachDiskBucket
+	qps := rate.Limit(defaultAttachDetachDiskQPS)
+	bucket := defaultAttachDetachDiskBucket
 	if az.Config.AttachDetachDiskRateLimit != nil {
-		qps = az.Config.AttachDetachDiskRateLimit.CloudProviderRateLimitQPSWrite
+		qps = rate.Limit(az.Config.AttachDetachDiskRateLimit.CloudProviderRateLimitQPSWrite)
 		bucket = az.Config.AttachDetachDiskRateLimit.CloudProviderRateLimitBucketWrite
 	}
 	klog.V(2).Infof("attach/detach disk operation rate limit QPS: %f, Bucket: %d", qps, bucket)
@@ -912,8 +915,58 @@ func initDiskControllers(az *Cloud) error {
 		subscriptionID:        az.SubscriptionID,
 		cloud:                 az,
 		lockMap:               newLockMap(),
-		diskOpRateLimiter:     flowcontrol.NewTokenBucketRateLimiter(qps, bucket),
 	}
+
+	attachDetachRateLimiter := rate.NewLimiter(qps, bucket)
+
+	loggerAdapter := batch.NewLoggerAdapter(
+		batch.WithVerboseLogger(klog.V(3).Infof),
+		batch.WithInfoLogger(klog.Infof),
+		batch.WithWarningLogger(klog.Warningf),
+		batch.WithErrorLogger(klog.Errorf),
+	)
+
+	processorOptions := []batch.ProcessorOption{
+		batch.WithDelayBeforeStart(1 * time.Second),
+		batch.WithGlobalLimiter(attachDetachRateLimiter),
+		batch.WithLogger(loggerAdapter),
+	}
+
+	attachBatchFn := func(ctx context.Context, nodeName string, values []interface{}) ([]interface{}, error) {
+		disksToAttach := make([]attachDiskParams, len(values))
+		for i, value := range values {
+			disksToAttach[i] = value.(attachDiskParams)
+		}
+
+		lunChans, err := common.attachDiskBatchToNode(ctx, types.NodeName(nodeName), disksToAttach)
+		if err != nil {
+			return nil, err
+		}
+
+		results := make([]interface{}, len(lunChans))
+		for i, lun := range lunChans {
+			results[i] = lun
+		}
+
+		return results, nil
+	}
+
+	detachBatchFn := func(ctx context.Context, nodeName string, values []interface{}) ([]interface{}, error) {
+		disksToDetach := make([]detachDiskParams, len(values))
+		for i, value := range values {
+			disksToDetach[i] = value.(detachDiskParams)
+		}
+
+		err := common.detachDiskBatchFromNode(ctx, types.NodeName(nodeName), disksToDetach)
+		if err != nil {
+			return nil, err
+		}
+
+		return make([]interface{}, len(disksToDetach)), nil
+	}
+
+	common.attachDiskProcessor = batch.NewProcessor(attachBatchFn, processorOptions...)
+	common.detachDiskProcessor = batch.NewProcessor(detachBatchFn, processorOptions...)
 
 	if az.HasExtendedLocation() {
 		common.extendedLocation = &ExtendedLocation{

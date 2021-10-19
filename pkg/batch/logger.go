@@ -16,7 +16,10 @@ limitations under the License.
 
 package batch
 
-import "log"
+import (
+	"io"
+	"log"
+)
 
 type standardLogger struct {
 	logger  *log.Logger
@@ -60,15 +63,33 @@ func (l *standardLogger) Errorf(format string, v ...interface{}) {
 	l.logger.Printf("ERROR: "+format, v...)
 }
 
+/// applyDefaults applies default options to the standardLogger.
+func (l *standardLogger) applyDefaults() {
+	if l.logger == nil {
+		l.logger = log.Default()
+	}
+}
+
 // NewStandardLogger creates a new default logger.
 func NewStandardLogger(options ...StandardLoggerOption) Logger {
-	logger := &standardLogger{logger: log.Default()}
+	logger := &standardLogger{}
 
 	for _, option := range options {
 		option(logger)
 	}
 
+	logger.applyDefaults()
+
 	return logger
+}
+
+// WithOutput sets the destination to which log data will be written. The prefix appears
+// at the beginning of each generated log line, or after the log header if the Lmsgprefix
+// flag is provided. The flag argument defines the logging properties.
+func WithOutput(output io.Writer, prefix string, flag int) StandardLoggerOption {
+	return func(l *standardLogger) {
+		l.logger = log.New(output, prefix, flag)
+	}
 }
 
 // WithVerboseLogging enables verbose logging on the standard logger.

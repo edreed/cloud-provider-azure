@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -73,6 +74,22 @@ var (
 			processDuration: 100 * time.Millisecond,
 			timeout:         1 * time.Minute,
 			options:         append(defaultProcessorOptions, WithDelayBeforeStart(50*time.Millisecond)),
+		},
+		{
+			description:     "[Success] Multiple entries & batches - 20ms/value, batch rate limit of 1 QPS",
+			numValues:       10,
+			valuesRate:      20 * time.Millisecond,
+			processDuration: 100 * time.Millisecond,
+			timeout:         2 * time.Minute,
+			options:         append(defaultProcessorOptions, WithBatchLimits(rate.Limit(1.0), 1)),
+		},
+		{
+			description:     "[Success] Multiple entries & batches - 20ms/value, global rate limit of 5 QPS",
+			numValues:       10,
+			valuesRate:      20 * time.Millisecond,
+			processDuration: 100 * time.Millisecond,
+			timeout:         2 * time.Minute,
+			options:         append(defaultProcessorOptions, WithGlobalLimits(rate.Limit(5.0), 1)),
 		},
 		{
 			description:     "[Partial] Partial success with multiple entries & batches - race",
@@ -271,7 +288,7 @@ func TestProcessorDoChan(t *testing.T) {
 						// This test explicitly does not select-wait on ctx.Done() as a well-formed program should.
 						// This is done in order to catch cases where a batched item is dropped with no results.
 						select {
-						case <-time.After(10 * test.processDuration):
+						case <-time.After(maxDuration(test.timeout, time.Duration(2*test.numValues*int(test.processDuration)))):
 							t.Errorf("Failed to process value %d for key %s", i, bucket)
 						case result := <-resultChan:
 							if test.failEvery == 0 || ((i+1)%test.failEvery) != 0 {

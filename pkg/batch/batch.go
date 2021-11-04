@@ -66,6 +66,14 @@ func (b *batcher) add(ctx context.Context, value interface{}) (e *entry, first b
 	return
 }
 
+// isEmpty returns true if the batch is currently empty.
+func (b *batcher) isEmpty() bool {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	return len(b.entries) == 0
+}
+
 // flush returns the current batch of values and empties the batch. It also returns the time of the
 // furthest context deadline in the batch. If no entries specify a deadline in their context,
 // deadline.IsZero() == true.
@@ -182,7 +190,7 @@ func (b *batcher) do(
 			delayBeforeStart := processor.delayBeforeStart
 			limiter := processor.getLimiterFn(key)
 
-			for !b.deleted {
+			for !b.deleted && !b.isEmpty() {
 				// Delay start of batch processing based on the max of the initial delay and delay due to throttling.
 				reservation := limiter.Reserve()
 				timeToDelay := maxDuration(delayBeforeStart, reservation.Delay())
@@ -190,7 +198,7 @@ func (b *batcher) do(
 				if timeToDelay > 0 {
 					time.Sleep(timeToDelay)
 
-					if delayBeforeStart > 0 {
+					if timeToDelay == delayBeforeStart {
 						processor.logger.Verbosef("Delayed processing of batch %q by %v due to start delay", key, timeToDelay)
 					} else {
 						processor.logger.Warningf("Delayed processing of batch %q by %v due to client-side throttling", key, timeToDelay)

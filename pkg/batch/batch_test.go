@@ -24,26 +24,41 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
 )
 
+type testBatchMetricsRecorder struct {
+	batchKey          string
+	rateLimitDelays   []time.Duration
+	batchSizes        []int
+	completionResults []error
+}
+
+type testProcessorMetricsRecorder struct {
+	batchRecorders sync.Map
+}
+
 var (
+	testMetrics             = testProcessorMetricsRecorder{}
 	errProcessFailed        = errors.New("process failed")
 	defaultLogger           = NewStandardLogger(WithVerboseLogging())
 	defaultProcessorOptions = []ProcessorOption{
 		WithLogger(defaultLogger),
+		WithMetricsRecorder(&testMetrics),
 	}
 	processorDoTestCases = []struct {
-		description     string
-		numValues       int
-		valuesRate      time.Duration
-		processDuration time.Duration
-		timeout         time.Duration
-		options         []ProcessorOption
-		failWithErr     error
-		expectedErr     error
-		failEvery       int
+		description          string
+		numValues            int
+		valuesRate           time.Duration
+		processDuration      time.Duration
+		timeout              time.Duration
+		options              []ProcessorOption
+		failWithErr          error
+		expectedErr          error
+		failEvery            int
+		expectRateLimitDelay bool
 	}{
 		{
 			description:     "[Success] Single entry",
@@ -76,20 +91,22 @@ var (
 			options:         append(defaultProcessorOptions, WithDelayBeforeStart(50*time.Millisecond)),
 		},
 		{
-			description:     "[Success] Multiple entries & batches - 20ms/value, batch rate limit of 1 QPS",
-			numValues:       10,
-			valuesRate:      20 * time.Millisecond,
-			processDuration: 100 * time.Millisecond,
-			timeout:         2 * time.Minute,
-			options:         append(defaultProcessorOptions, WithBatchLimits(rate.Limit(1.0), 1)),
+			description:          "[Success] Multiple entries & batches - 20ms/value, batch rate limit of 1 QPS",
+			numValues:            10,
+			valuesRate:           20 * time.Millisecond,
+			processDuration:      100 * time.Millisecond,
+			timeout:              2 * time.Minute,
+			options:              append(defaultProcessorOptions, WithBatchLimits(rate.Limit(1.0), 1)),
+			expectRateLimitDelay: true,
 		},
 		{
-			description:     "[Success] Multiple entries & batches - 20ms/value, global rate limit of 5 QPS",
-			numValues:       10,
-			valuesRate:      20 * time.Millisecond,
-			processDuration: 100 * time.Millisecond,
-			timeout:         2 * time.Minute,
-			options:         append(defaultProcessorOptions, WithGlobalLimits(rate.Limit(5.0), 1)),
+			description:          "[Success] Multiple entries & batches - 20ms/value, global rate limit of 5 QPS",
+			numValues:            10,
+			valuesRate:           20 * time.Millisecond,
+			processDuration:      100 * time.Millisecond,
+			timeout:              2 * time.Minute,
+			options:              append(defaultProcessorOptions, WithGlobalLimits(rate.Limit(5.0), 1)),
+			expectRateLimitDelay: true,
 		},
 		{
 			description:     "[Partial] Partial success with multiple entries & batches - race",
@@ -156,7 +173,51 @@ var (
 )
 
 func getProcessingFailedErr(batch string, value int) error {
-	return fmt.Errorf("processing failed for value %d of batch %q", value, batch)
+	return fmt.Errorf("processing failed for value %d of %q", value, batch)
+}
+
+func (r *testBatchMetricsRecorder) RecordRateLimitDelay(delay time.Duration) {
+	r.rateLimitDelays = append(r.rateLimitDelays, delay)
+}
+
+func (r *testBatchMetricsRecorder) RecordBatchCompletion(size int, err error) {
+	// Because deletion of the batch key could result in recording a completion with size == 0,
+	// we ignore this completion event.
+	if size > 0 {
+		r.batchSizes = append(r.batchSizes, size)
+		r.completionResults = append(r.completionResults, err)
+	}
+}
+
+func (r *testBatchMetricsRecorder) verifyMetrics(t *testing.T, expectRateLimitDelay bool, expectedError error) {
+	if expectRateLimitDelay {
+		assert.NotEmptyf(t, r.rateLimitDelays, "Expected rate limit delays, but none were recorded for %q", r.batchKey)
+	} else {
+		assert.Emptyf(t, r.rateLimitDelays, "Unexpected rate limit delays were recorded for %q", r.batchKey)
+	}
+
+	assert.Equal(t, len(r.batchSizes), len(r.completionResults), "Mismatched recording of batch sizes and completion results.")
+
+	for batch, recordedErr := range r.completionResults {
+		assert.Equalf(t, expectedError, recordedErr, "Unexpected completion result recorded for batch %d of %q", batch, r.batchKey)
+	}
+}
+
+func (r *testProcessorMetricsRecorder) RecordBatchStart(key string) MetricsRecorder {
+	batchRecorder, _ := r.batchRecorders.LoadOrStore(key, &testBatchMetricsRecorder{batchKey: key})
+
+	return batchRecorder.(*testBatchMetricsRecorder)
+}
+
+func (r *testProcessorMetricsRecorder) verifyMetrics(t *testing.T, numBatches int, expectRateLimitDelay bool, expectedError error) {
+	r.batchRecorders.Range(func(key, value interface{}) bool {
+		value.(*testBatchMetricsRecorder).verifyMetrics(t, expectRateLimitDelay, expectedError)
+		return true
+	})
+}
+
+func (r *testProcessorMetricsRecorder) reset() {
+	r.batchRecorders = sync.Map{}
 }
 
 func TestProcessorDo(t *testing.T) {
@@ -194,6 +255,8 @@ func TestProcessorDo(t *testing.T) {
 				return
 			}
 
+			testMetrics.reset()
+
 			processor := NewProcessor(batchFn, test.options...)
 
 			startTime := time.Now()
@@ -228,6 +291,8 @@ func TestProcessorDo(t *testing.T) {
 			for b := 0; b < 5; b++ {
 				processor.Delete(fmt.Sprintf("bucket%d", b))
 			}
+
+			testMetrics.verifyMetrics(t, 5, test.expectRateLimitDelay, test.expectedErr)
 		})
 	}
 }
@@ -266,6 +331,8 @@ func TestProcessorDoChan(t *testing.T) {
 
 				return
 			}
+
+			testMetrics.reset()
 
 			processor := NewProcessor(batchFn, test.options...)
 
@@ -309,6 +376,8 @@ func TestProcessorDoChan(t *testing.T) {
 			for b := 0; b < 5; b++ {
 				processor.Delete(fmt.Sprintf("bucket%d", b))
 			}
+
+			testMetrics.verifyMetrics(t, 5, test.expectRateLimitDelay, test.expectedErr)
 		})
 	}
 }

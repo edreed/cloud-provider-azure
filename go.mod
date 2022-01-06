@@ -30,7 +30,7 @@ require (
 	k8s.io/component-base v0.23.0
 	k8s.io/component-helpers v0.23.1
 	k8s.io/controller-manager v0.23.0
-	k8s.io/klog/v2 v2.30.0
+	k8s.io/klog/v2 v2.40.1
 	k8s.io/kubelet v0.23.0
 	k8s.io/utils v0.0.0-20210930125809-cb0fa318a74b
 	sigs.k8s.io/yaml v1.3.0

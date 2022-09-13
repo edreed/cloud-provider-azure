@@ -32,12 +32,13 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 	"sigs.k8s.io/cloud-provider-azure/tests/e2e/utils"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
-	. "github.com/onsi/ginkgo"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/go-autorest/autorest/to"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Private link service", func() {
+var _ = Describe("Private link service", Label(utils.TestSuiteLabelPrivateLinkService), func() {
 	basename := "pls"
 	serviceName := "pls-test"
 
@@ -49,12 +50,12 @@ var _ = Describe("Private link service", func() {
 		"app": serviceName,
 	}
 	ports := []v1.ServicePort{{
-		Port:       nginxPort,
-		TargetPort: intstr.FromInt(nginxPort),
+		Port:       serverPort,
+		TargetPort: intstr.FromInt(serverPort),
 	}}
 
 	BeforeEach(func() {
-		if !strings.EqualFold(os.Getenv(utils.LoadBalancerSkuEnv), "standard") {
+		if !strings.EqualFold(os.Getenv(utils.LoadBalancerSkuEnv), string(network.PublicIPAddressSkuNameStandard)) {
 			Skip("private link service only works with standard load balancer")
 		}
 		var err error
@@ -68,7 +69,7 @@ var _ = Describe("Private link service", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		utils.Logf("Creating deployment " + serviceName)
-		deployment := createNginxDeploymentManifest(serviceName, labels)
+		deployment := createServerDeploymentManifest(serviceName, labels)
 		_, err = cs.AppsV1().Deployments(ns.Name).Create(context.TODO(), deployment, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -135,32 +136,18 @@ var _ = Describe("Private link service", func() {
 
 	It("should support service annotation 'service.beta.kubernetes.io/azure-pls-ip-configuration-subnet'", func() {
 		subnetName := "pls-subnet"
-
-		vNet, err := tc.GetClusterVirtualNetwork()
-		Expect(err).NotTo(HaveOccurred())
-
-		var newSubnetID string
-		for _, existingSubnet := range *vNet.Subnets {
-			if *existingSubnet.Name == subnetName {
-				By("Test subnet have existed, skip creating")
-				newSubnetID = *existingSubnet.ID
-				break
-			}
-		}
-
-		if newSubnetID == "" {
-			By("Test subnet doesn't exist. Creating a new one...")
-			newSubnetCIDR, err := utils.GetNextSubnetCIDR(vNet)
-			Expect(err).NotTo(HaveOccurred())
-			newSubnet, err := tc.CreateSubnet(vNet, &subnetName, &newSubnetCIDR, true)
-			newSubnetID = *newSubnet.ID
-			Expect(err).NotTo(HaveOccurred())
+		subnet, isNew := createNewSubnet(tc, subnetName)
+		Expect(to.String(subnet.Name)).To(Equal(subnetName))
+		if isNew {
 			defer func() {
 				utils.Logf("cleaning up test subnet %s", subnetName)
-				err = tc.DeleteSubnet(*vNet.Name, subnetName)
+				vNet, err := tc.GetClusterVirtualNetwork()
+				Expect(err).NotTo(HaveOccurred())
+				err = tc.DeleteSubnet(to.String(vNet.Name), subnetName)
 				Expect(err).NotTo(HaveOccurred())
 			}()
 		}
+		newSubnetID := *subnet.ID
 
 		annotation := map[string]string{
 			consts.ServiceAnnotationLoadBalancerInternal:     "true",
@@ -373,35 +360,51 @@ var _ = Describe("Private link service", func() {
 			consts.ServiceAnnotationPLSCreation:                      "true",
 			consts.ServiceAnnotationPLSIpConfigurationIPAddressCount: strconv.Itoa(ipAddrCount),
 		}
-		ip := createAndExposeDefaultServiceWithAnnotation(cs, "service1", ns.Name, labels, annotation, ports)
-		utils.Logf("Successfully created service1 in namespace %s with IP %s", ns.Name, ip)
+		svc1 := "service1"
+		ip := createAndExposeDefaultServiceWithAnnotation(cs, svc1, ns.Name, labels, annotation, ports)
+		defer func() {
+			err := utils.DeleteService(cs, ns.Name, svc1)
+			Expect(err).NotTo(HaveOccurred())
+		}()
+		utils.Logf("Successfully created %s in namespace %s with IP %s", svc1, ns.Name, ip)
+
+		deployName0 := "pls-deploy0"
+		utils.Logf("Creating deployment %s", deployName0)
+		label0 := map[string]string{
+			"app": deployName0,
+		}
+		tcpTestingPort := int32(testingPort)
+		deploy0 := createDeploymentManifest(deployName0, label0, &tcpTestingPort, nil)
+		_, err := cs.AppsV1().Deployments(ns.Name).Create(context.TODO(), deploy0, metav1.CreateOptions{})
+		defer func() {
+			err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), deployName0, metav1.DeleteOptions{})
+			Expect(err).NotTo(HaveOccurred())
+		}()
+		Expect(err).NotTo(HaveOccurred())
 
 		ports2 := []v1.ServicePort{{
 			Port:       testingPort,
 			TargetPort: intstr.FromInt(testingPort),
 		}}
 		delete(annotation, consts.ServiceAnnotationPLSIpConfigurationIPAddressCount)
-		service2 := utils.CreateLoadBalancerServiceManifest("service2", annotation, labels, ns.Name, ports2)
+		svc2 := "service2"
+		service2 := utils.CreateLoadBalancerServiceManifest(svc2, annotation, label0, ns.Name, ports2)
+		defer func() {
+			err = utils.DeleteService(cs, ns.Name, svc2)
+			Expect(err).NotTo(HaveOccurred())
+		}()
 		service2.Spec.LoadBalancerIP = ip
-		_, err := cs.CoreV1().Services(ns.Name).Create(context.TODO(), service2, metav1.CreateOptions{})
+		_, err = cs.CoreV1().Services(ns.Name).Create(context.TODO(), service2, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
-		_, err = utils.WaitServiceExposureAndValidateConnectivity(cs, ns.Name, "service2", ip)
+		_, err = utils.WaitServiceExposureAndValidateConnectivity(cs, ns.Name, svc2, ip)
 		Expect(err).NotTo(HaveOccurred())
-		utils.Logf("Successfully created service2 in namespace %s with IP %s", ns.Name, ip)
+		utils.Logf("Successfully created %s in namespace %s with IP %s", svc2, ns.Name, ip)
 
 		// get pls from azure client
 		pls := getPrivateLinkServiceFromIP(tc, ip, "", "", "")
 		Expect(pls.IPConfigurations).NotTo(BeNil())
 		// Verify it's still the configuration from service1
 		Expect(len(*pls.IPConfigurations)).To(Equal(ipAddrCount))
-
-		defer func() {
-			By("Cleaning up")
-			err = utils.DeleteService(cs, ns.Name, "service1")
-			Expect(err).NotTo(HaveOccurred())
-			err = utils.DeleteService(cs, ns.Name, "service2")
-			Expect(err).NotTo(HaveOccurred())
-		}()
 	})
 })
 
@@ -448,6 +451,9 @@ func getPrivateLinkServiceFromIP(tc *utils.AzureTestClient, ip, plsResourceGroup
 	err = wait.PollImmediate(10*time.Second, 10*time.Minute, func() (bool, error) {
 		pls, err = tc.GetPrivateLinkService(plsResourceGroup, plsName)
 		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return false, nil
+			}
 			return false, err
 		}
 		return *pls.Name == plsName, nil

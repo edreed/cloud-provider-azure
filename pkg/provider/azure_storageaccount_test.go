@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
-	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-02-01/storage"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-09-01/storage"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -369,30 +369,36 @@ func TestEnsureStorageAccount(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                      string
-		createAccount             bool
-		createPrivateEndpoint     bool
-		mockStorageAccountsClient bool
-		setAccountOptions         bool
-		accountName               string
-		subscriptionID            string
-		resourceGroup             string
-		expectedErr               string
+		name                            string
+		createAccount                   bool
+		createPrivateEndpoint           bool
+		SubnetPropertiesFormatNil       bool
+		mockStorageAccountsClient       bool
+		setAccountOptions               bool
+		requireInfrastructureEncryption *bool
+		keyVaultURL                     *string
+		accountName                     string
+		subscriptionID                  string
+		resourceGroup                   string
+		expectedErr                     string
 	}{
 		{
-			name:                      "[Success] EnsureStorageAccount with createPrivateEndpoint",
-			createAccount:             true,
-			createPrivateEndpoint:     true,
-			mockStorageAccountsClient: true,
-			setAccountOptions:         true,
-			resourceGroup:             "rg",
-			accountName:               "",
-			expectedErr:               "",
+			name:                            "[Success] EnsureStorageAccount with createPrivateEndpoint",
+			createAccount:                   true,
+			createPrivateEndpoint:           true,
+			mockStorageAccountsClient:       true,
+			setAccountOptions:               true,
+			requireInfrastructureEncryption: to.BoolPtr(true),
+			keyVaultURL:                     to.StringPtr("keyVaultURL"),
+			resourceGroup:                   "rg",
+			accountName:                     "",
+			expectedErr:                     "",
 		},
 		{
 			name:                      "[Failed] EnsureStorageAccount with createPrivateEndpoint: get storage key failed",
 			createAccount:             true,
 			createPrivateEndpoint:     true,
+			SubnetPropertiesFormatNil: true,
 			mockStorageAccountsClient: true,
 			setAccountOptions:         true,
 			resourceGroup:             "rg",
@@ -437,7 +443,11 @@ func TestEnsureStorageAccount(t *testing.T) {
 				mockStorageAccountsClient.EXPECT().ListKeys(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(storageAccountListKeys, &retry.Error{}).AnyTimes()
 			}
 
-			subnet := network.Subnet{SubnetPropertiesFormat: &network.SubnetPropertiesFormat{}}
+			subnetPropertiesFormat := &network.SubnetPropertiesFormat{}
+			if test.SubnetPropertiesFormatNil {
+				subnetPropertiesFormat = nil
+			}
+			subnet := network.Subnet{SubnetPropertiesFormat: subnetPropertiesFormat}
 
 			mockSubnetsClient := mocksubnetclient.NewMockInterface(ctrl)
 			mockSubnetsClient.EXPECT().Get(gomock.Any(), vnetResourceGroup, vnetName, subnetName, gomock.Any()).Return(subnet, nil).Times(1)

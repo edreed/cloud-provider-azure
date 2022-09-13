@@ -24,7 +24,7 @@ package mockfileclient
 import (
 	reflect "reflect"
 
-	storage "github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-02-01/storage"
+	storage "github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-09-01/storage"
 	gomock "github.com/golang/mock/gomock"
 	fileclient "sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
 )
@@ -137,4 +137,18 @@ func (m *MockInterface) SetServiceProperties(resourceGroupName, accountName stri
 func (mr *MockInterfaceMockRecorder) SetServiceProperties(resourceGroupName, accountName, parameters interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetServiceProperties", reflect.TypeOf((*MockInterface)(nil).SetServiceProperties), resourceGroupName, accountName, parameters)
+}
+
+// WithSubscriptionID mocks base method.
+func (m *MockInterface) WithSubscriptionID(subscriptionID string) fileclient.Interface {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "WithSubscriptionID", subscriptionID)
+	ret0, _ := ret[0].(fileclient.Interface)
+	return ret0
+}
+
+// WithSubscriptionID indicates an expected call of WithSubscriptionID.
+func (mr *MockInterfaceMockRecorder) WithSubscriptionID(subscriptionID interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WithSubscriptionID", reflect.TypeOf((*MockInterface)(nil).WithSubscriptionID), subscriptionID)
 }

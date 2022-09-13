@@ -21,9 +21,10 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
-	aznetwork "github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	aznetwork "github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 
 	v1 "k8s.io/api/core/v1"
@@ -141,7 +142,7 @@ func (azureTestClient *AzureTestClient) getSecurityGroupList() (result aznetwork
 	err = wait.PollImmediate(poll, singleCallTimeout, func() (bool, error) {
 		result, err = securityGroupsClient.List(context.Background(), azureTestClient.GetResourceGroup())
 		if err != nil {
-			Logf("error when listing sgs: %w", err)
+			Logf("error when listing security groups: %w", err)
 			if !IsRetryableAPIError(err) {
 				return false, err
 			}
@@ -154,18 +155,23 @@ func (azureTestClient *AzureTestClient) getSecurityGroupList() (result aznetwork
 
 // GetClusterSecurityGroups gets the security groups of the cluster.
 func (azureTestClient *AzureTestClient) GetClusterSecurityGroups() (ret []aznetwork.SecurityGroup, err error) {
-	securityGroupsList, err := azureTestClient.getSecurityGroupList()
-	if err != nil {
-		return
-	}
-	Logf("got sg list, length = %d", len(securityGroupsList.Values()))
+	err = wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+		securityGroupsList, err := azureTestClient.getSecurityGroupList()
+		if err != nil {
+			return false, err
+		}
 
-	if len(securityGroupsList.Values()) != 0 {
-		ret = securityGroupsList.Values()
-		return
+		sgListLength := len(securityGroupsList.Values())
+		Logf("got sg list, length = %d", sgListLength)
+		if sgListLength != 0 {
+			ret = securityGroupsList.Values()
+			return true, nil
+		}
+		return false, nil
+	})
+	if err == wait.ErrWaitTimeout {
+		err = fmt.Errorf("could not find the cluster security group in resource group %s", azureTestClient.GetResourceGroup())
 	}
-
-	err = fmt.Errorf("could not find the cluster security group in resource group %s", azureTestClient.GetResourceGroup())
 	return
 }
 
@@ -205,6 +211,107 @@ func WaitCreatePIP(azureTestClient *AzureTestClient, ipName, rgName string, ipPa
 		return pip.IPAddress != nil, nil
 	})
 	return pip, err
+}
+
+func WaitCreatePIPPrefix(
+	cli *AzureTestClient,
+	name, rgName string,
+	parameter aznetwork.PublicIPPrefix,
+) (aznetwork.PublicIPPrefix, error) {
+	Logf("Creating PublicIPPrefix named %s", name)
+
+	resourceClient := cli.createPublicIPPrefixesClient()
+	_, err := resourceClient.CreateOrUpdate(context.Background(), rgName, name, parameter)
+	var prefix aznetwork.PublicIPPrefix
+	if err != nil {
+		return prefix, err
+	}
+	err = wait.PollImmediate(poll, singleCallTimeout, func() (bool, error) {
+		prefix, err = resourceClient.Get(context.Background(), rgName, name, "")
+		if err != nil {
+			if !IsRetryableAPIError(err) {
+				return false, err
+			}
+			return false, nil
+		}
+		return prefix.IPPrefix != nil, nil
+	})
+	return prefix, err
+}
+
+func WaitGetPIPPrefix(
+	cli *AzureTestClient,
+	name string,
+) (aznetwork.PublicIPPrefix, error) {
+	Logf("Getting PublicIPPrefix named %s", name)
+
+	resourceClient := cli.createPublicIPPrefixesClient()
+	var (
+		prefix aznetwork.PublicIPPrefix
+		err    error
+	)
+	err = wait.PollImmediate(poll, singleCallTimeout, func() (bool, error) {
+		prefix, err = resourceClient.Get(context.Background(), cli.GetResourceGroup(), name, "")
+		if err != nil {
+			if !IsRetryableAPIError(err) {
+				return false, err
+			}
+			return false, nil
+		}
+		return prefix.IPPrefix != nil, nil
+	})
+	return prefix, err
+}
+
+// WaitGetPIPByPrefix retrieves the ONLY one PIP that created by specified prefix.
+// If untilPIPCreated is true, it will retry until 1 PIP is associated to the prefix.
+func WaitGetPIPByPrefix(
+	cli *AzureTestClient,
+	prefixName string,
+	untilPIPCreated bool,
+) (network.PublicIPAddress, error) {
+
+	var pip network.PublicIPAddress
+
+	err := wait.Poll(10*time.Second, 5*time.Minute, func() (bool, error) {
+		prefix, err := WaitGetPIPPrefix(cli, prefixName)
+		if err != nil || prefix.PublicIPAddresses == nil || len(*prefix.PublicIPAddresses) != 1 {
+			numOfIPs := 0
+			if prefix.PublicIPAddresses != nil {
+				numOfIPs = len(*prefix.PublicIPAddresses)
+			}
+			Logf("prefix = [%s] not ready with error = [%v] and number of IP = [%d]", prefixName, err, numOfIPs)
+			if !untilPIPCreated {
+				return true, fmt.Errorf("get pip by prefix = [%s], err = [%v], number of IP = [%d]", prefixName, err, numOfIPs)
+			}
+			return false, nil
+		}
+
+		pipID := to.String((*prefix.PublicIPAddresses)[0].ID)
+		parts := strings.Split(pipID, "/")
+		pipName := parts[len(parts)-1]
+		pip, err = WaitGetPIP(cli, pipName)
+
+		return true, err
+	})
+
+	return pip, err
+}
+
+func DeletePIPPrefixWithRetry(cli *AzureTestClient, name string) error {
+	Logf("Deleting PublicIPPrefix named %s", name)
+
+	resourceClient := cli.createPublicIPPrefixesClient()
+
+	err := wait.PollImmediate(poll, singleCallTimeout, func() (bool, error) {
+		_, err := resourceClient.Delete(context.Background(), cli.GetResourceGroup(), name)
+		if err != nil {
+			Logf("error: %s, will retry soon", err)
+			return false, nil
+		}
+		return true, nil
+	})
+	return err
 }
 
 // DeletePIPWithRetry tries to delete a public ip resource
@@ -279,6 +386,20 @@ func SelectAvailablePrivateIP(tc *AzureTestClient) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("Find no availabePrivateIP in subnet CIDR %s", subnet)
+}
+
+// GetPublicIPFromAddress finds public ip according to ip address
+func (azureTestClient *AzureTestClient) GetPublicIPFromAddress(resourceGroupName, ipAddr string) (pip aznetwork.PublicIPAddress, err error) {
+	pipList, err := azureTestClient.ListPublicIPs(resourceGroupName)
+	if err != nil {
+		return pip, err
+	}
+	for _, pip := range pipList {
+		if strings.EqualFold(to.String(pip.IPAddress), ipAddr) {
+			return pip, err
+		}
+	}
+	return
 }
 
 // ListPublicIPs lists all the publicIP addresses active

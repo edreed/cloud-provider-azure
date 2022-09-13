@@ -1,14 +1,15 @@
 {{- if eq .Capabilities.KubeVersion.Minor "21" -}}
-  {{- $_ := set . "cloudProviderAzureVersion" "v1.0.18" }}
+  {{- $_ := set . "cloudProviderAzureVersion" "v1.0.23" }}
 {{- else if eq .Capabilities.KubeVersion.Minor "22" -}}
-  {{- $_ := set . "cloudProviderAzureVersion" "v1.1.14" }}
+  {{- $_ := set . "cloudProviderAzureVersion" "v1.1.19" }}
 {{- else if eq .Capabilities.KubeVersion.Minor "23" -}}
-  {{- $_ := set . "cloudProviderAzureVersion" "v1.23.11" }}
+  {{- $_ := set . "cloudProviderAzureVersion" "v1.23.16" }}
 {{- else if eq .Capabilities.KubeVersion.Minor "24" -}}
-  {{- $_ := set . "cloudProviderAzureVersion" "v1.24.0" }}
+  {{- $_ := set . "cloudProviderAzureVersion" "v1.24.4" }}
 {{- else -}}
   {{- $_ := set . "unsupportedKubernetesVersion" "true" }}
 {{- end -}}
+{{- if .Values.cloudControllerManager.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -152,7 +153,7 @@ spec:
     matchLabels:
       tier: control-plane
       component: cloud-controller-manager
-  replicas: 1
+  replicas: {{ .Values.cloudControllerManager.replicas }}
   template:
     metadata:
       labels:
@@ -162,11 +163,25 @@ spec:
       priorityClassName: system-node-critical
       hostNetwork: true
       nodeSelector:
+  {{- if ge .Capabilities.KubeVersion.Minor "24" }}
+        node-role.kubernetes.io/control-plane: ""
+  {{- else }}
         node-role.kubernetes.io/master: ""
+  {{- end }}
       serviceAccountName: cloud-controller-manager
       tolerations:
         - key: node-role.kubernetes.io/master
           effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            tier: control-plane
+            component: cloud-controller-manager
       containers:
         - name: cloud-controller-manager
           image: {{ template "image.cloudControllerManager" . | required "you must use a supported version of Kubernetes or provide cloudControllerManager.imageRepository, cloudControllerManager.imageName, and cloudControllerManager.imageTag values" }}
@@ -267,8 +282,8 @@ spec:
           volumeMounts:
             - name: etc-kubernetes
               mountPath: /etc/kubernetes
-            - name: etc-ssl
-              mountPath: /etc/ssl
+            - name: ssl-mount
+              mountPath: {{ .Values.cloudControllerManager.caCertDir }}
               readOnly: true
             - name: msi
               mountPath: /var/lib/waagent/ManagedIdentity-Settings
@@ -277,12 +292,14 @@ spec:
         - name: etc-kubernetes
           hostPath:
             path: /etc/kubernetes
-        - name: etc-ssl
+        - name: ssl-mount
           hostPath:
-            path: /etc/ssl
+            path: {{ .Values.cloudControllerManager.caCertDir }}
         - name: msi
           hostPath:
             path: /var/lib/waagent/ManagedIdentity-Settings
+{{- end }}
+{{- if .Values.cloudNodeManager.enabled }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -304,6 +321,9 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["watch", "list", "get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["nodes/status"]
+    verbs: ["patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -349,6 +369,8 @@ spec:
         - key: CriticalAddonsOnly
           operator: Exists
         - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule
         - operator: "Exists"
           effect: NoExecute
@@ -430,10 +452,6 @@ spec:
       tolerations:
       - key: CriticalAddonsOnly
         operator: Exists
-      - key: node-role.kubernetes.io/master
-        operator: Equal
-        value: "true"
-        effect: NoSchedule
       - operator: "Exists"
         effect: NoExecute
       - operator: "Exists"
@@ -487,3 +505,4 @@ spec:
           limits:
             cpu: {{ .Values.cloudNodeManager.containerResourceManagement.limitsCPUWin }}
             memory: {{ .Values.cloudNodeManager.containerResourceManagement.limitsMemWin }}
+{{- end }}

@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
@@ -573,7 +573,7 @@ func TestDelete(t *testing.T) {
 
 	r := getTestSubnet("subnet1")
 	armClient := mockarmclient.NewMockInterface(ctrl)
-	armClient.EXPECT().DeleteResource(gomock.Any(), to.String(r.ID), "").Return(nil).Times(1)
+	armClient.EXPECT().DeleteResource(gomock.Any(), to.String(r.ID)).Return(nil).Times(1)
 
 	subnetClient := getTestSubnetClient(armClient)
 	rerr := subnetClient.Delete(context.TODO(), "rg", "vnet", "subnet1")
@@ -626,7 +626,7 @@ func TestDeleteThrottle(t *testing.T) {
 
 	subnet := getTestSubnet("subnet1")
 	armClient := mockarmclient.NewMockInterface(ctrl)
-	armClient.EXPECT().DeleteResource(gomock.Any(), to.String(subnet.ID), "").Return(throttleErr).Times(1)
+	armClient.EXPECT().DeleteResource(gomock.Any(), to.String(subnet.ID)).Return(throttleErr).Times(1)
 
 	subnetClient := getTestSubnetClient(armClient)
 	rerr := subnetClient.Delete(context.TODO(), "rg", "vnet", "subnet1")

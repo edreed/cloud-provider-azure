@@ -37,7 +37,7 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 )
 
-//ManagedDiskController : managed disk controller struct
+// ManagedDiskController : managed disk controller struct
 type ManagedDiskController struct {
 	common *controllerCommon
 }
@@ -84,9 +84,11 @@ type ManagedDiskOptions struct {
 	BurstingEnabled *bool
 	// SubscriptionID - specify a different SubscriptionID
 	SubscriptionID string
+	// Location - specify a different location
+	Location string
 }
 
-//CreateManagedDisk : create managed disk
+// CreateManagedDisk: create managed disk
 func (c *ManagedDiskController) CreateManagedDisk(ctx context.Context, options *ManagedDiskOptions) (string, error) {
 	var err error
 	klog.V(4).Infof("azureDisk - creating new managed Name:%s StorageAccountType:%s Size:%v", options.DiskName, options.StorageAccountType, options.SizeGB)
@@ -211,8 +213,12 @@ func (c *ManagedDiskController) CreateManagedDisk(ctx context.Context, options *
 		diskProperties.MaxShares = &options.MaxShares
 	}
 
+	location := c.common.location
+	if options.Location != "" {
+		location = options.Location
+	}
 	model := compute.Disk{
-		Location: &c.common.location,
+		Location: &location,
 		Tags:     newTags,
 		Sku: &compute.DiskSku{
 			Name: diskSku,
@@ -267,7 +273,7 @@ func (c *ManagedDiskController) CreateManagedDisk(ctx context.Context, options *
 	return diskID, nil
 }
 
-//DeleteManagedDisk : delete managed disk
+// DeleteManagedDisk : delete managed disk
 func (c *ManagedDiskController) DeleteManagedDisk(ctx context.Context, diskURI string) error {
 	resourceGroup, subsID, err := getInfoFromDiskURI(diskURI)
 	if err != nil {

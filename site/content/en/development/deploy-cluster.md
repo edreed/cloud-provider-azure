@@ -7,10 +7,6 @@ description: >
   Deploy Kubernetes clusters
 ---
 
-## AKS-Engine
-
-Please refer to step 1-3 in [e2e-tests](../e2e/e2e-tests/#how-to-run-kubernetes-e2e-tests-locally) for how to deploy a cluster by [AKS-Engine](https://github.com/Azure/aks-engine).
-
 ## Cluster API Provider Azure (CAPZ)
 
 Please run the following command in the root directory of the repo.
@@ -43,7 +39,7 @@ Customizations are supported by environment variables:
 | AZURE_CLOUD_CONTROLLER_MANAGER_IMG      | false    | image of the cloud-controller-manager                                              | mcr.microsoft.com/oss/kubernetes/azure-cloud-controller-manager:v1.23.1 |
 | AZURE_CLOUD_NODE_MANAGER_IMG            | false    | image of the cloud-node-manager                                                    | mcr.microsoft.com/oss/kubernetes/azure-cloud-node-manager:v1.23.1       |
 | KUBERNETES_VERSION                      | false    | Kubernetes components version                                                      | v1.23.0                                                                 |
-| LB_SKU                                  | false    | LoadBalancer SKU, Standard or Basic                                                | Standard                                                                |
+| AZURE_LOADBALANCER_SKU                  | false    | LoadBalancer SKU, Standard or Basic                                                | Standard                                                                |
 | ENABLE_MULTI_SLB                        | false    | Enable multiple standard LoadBalancers per cluster                                 | false                                                                   |
 | LB_BACKEND_POOL_CONFIG_TYPE             | false    | LoadBalancer backend pool configuration type, nodeIPConfiguration, nodeIP or podIP | nodeIPConfiguration                                                     |
 | PUT_VMSS_VM_BATCH_SIZE                  | false    | Batch size when updating VMSS VM concurrently                                      | 0                                                                       |

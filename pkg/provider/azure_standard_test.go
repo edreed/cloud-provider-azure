@@ -24,7 +24,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -545,14 +545,24 @@ func testGetLoadBalancerSubResourceID(
 		resourceGroupName                   string
 		subResourceName                     string
 		useNetworkResourceInDifferentTenant bool
+		useNetworkResourceInDifferentSub    bool
 		expected                            string
 	}{
+		{
+			description:                         "resource id should contain NetworkResourceSubscriptionID when using network resources in different tenant and subscription",
+			loadBalancerName:                    "lbName",
+			resourceGroupName:                   "rgName",
+			subResourceName:                     "subResourceName",
+			useNetworkResourceInDifferentTenant: true,
+			useNetworkResourceInDifferentSub:    true,
+		},
 		{
 			description:                         "resource id should contain NetworkResourceSubscriptionID when using network resources in different subscription",
 			loadBalancerName:                    "lbName",
 			resourceGroupName:                   "rgName",
 			subResourceName:                     "subResourceName",
-			useNetworkResourceInDifferentTenant: true,
+			useNetworkResourceInDifferentTenant: false,
+			useNetworkResourceInDifferentSub:    true,
 		},
 		{
 			description:                         "resource id should contain SubscriptionID when not using network resources in different subscription",
@@ -560,29 +570,29 @@ func testGetLoadBalancerSubResourceID(
 			resourceGroupName:                   "rgName",
 			subResourceName:                     "subResourceName",
 			useNetworkResourceInDifferentTenant: false,
+			useNetworkResourceInDifferentSub:    false,
 		},
 	}
 
 	for _, c := range cases {
+		subscriptionID := az.SubscriptionID
 		if c.useNetworkResourceInDifferentTenant {
 			az.NetworkResourceTenantID = networkResourceTenantID
-			az.NetworkResourceSubscriptionID = networkResourceSubscriptionID
-			c.expected = fmt.Sprintf(
-				expectedResourceIDTemplate,
-				az.NetworkResourceSubscriptionID,
-				c.resourceGroupName,
-				c.loadBalancerName,
-				c.subResourceName)
 		} else {
 			az.NetworkResourceTenantID = ""
-			az.NetworkResourceSubscriptionID = ""
-			c.expected = fmt.Sprintf(
-				expectedResourceIDTemplate,
-				az.SubscriptionID,
-				c.resourceGroupName,
-				c.loadBalancerName,
-				c.subResourceName)
 		}
+		if c.useNetworkResourceInDifferentSub {
+			az.NetworkResourceSubscriptionID = networkResourceSubscriptionID
+			subscriptionID = networkResourceSubscriptionID
+		} else {
+			az.NetworkResourceSubscriptionID = ""
+		}
+		c.expected = fmt.Sprintf(
+			expectedResourceIDTemplate,
+			subscriptionID,
+			c.resourceGroupName,
+			c.loadBalancerName,
+			c.subResourceName)
 		subResourceID := getLoadBalancerSubResourceID(c.loadBalancerName, c.resourceGroupName, c.subResourceName)
 		assert.Equal(t, c.expected, subResourceID, c.description)
 	}

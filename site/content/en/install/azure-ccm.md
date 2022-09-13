@@ -15,6 +15,8 @@ Using [cloud-controller-manager](https://kubernetes.io/docs/concepts/overview/co
 
 ## Deployment
 
+There is a [helm chart available](https://github.com/kubernetes-sigs/cloud-provider-azure/tree/master/helm/cloud-provider-azure) which can be used to deploy the Azure cloud controller manager.
+
 To deploy Azure cloud controller manager, the following components need to be configured.
 
 ### kubelet
@@ -63,7 +65,7 @@ azure-cloud-node-manager should be run as daemonsets on both Windows and Linux n
 
 Please refer examples [here](../example/out-of-tree.md) for sample deployment manifests for above components.
 
-Alternatively, you can use [aks-engine](https://github.com/Azure/aks-engine) to deploy a Kubernetes cluster running with cloud-controller-manager. It supports deploying `Kubernetes azure-cloud-controller-manager` for Kubernetes v1.16+.
+Alternatively, you can use [cluster-api-provider-azure](https://github.com/kubernetes-sigs/cluster-api-provider-azure) to deploy a Kubernetes cluster running with cloud-controller-manager.
 
 ## AzureDisk and AzureFile
 

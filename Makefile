@@ -25,9 +25,6 @@ TEST_RESULTS_DIR=testResults
 TEST_MANIFEST ?= linux
 # build hyperkube image when specified
 K8S_BRANCH ?=
-# Only run conformance tests by default (non-serial and non-slow)
-# Note autoscaling tests would be skipped as well.
-CCM_E2E_ARGS ?= -ginkgo.skip=\\[Serial\\]\\[Slow\\]
 #The test args for Kubernetes e2e tests
 TEST_E2E_ARGS ?= '--ginkgo.focus=Port\sforwarding'
 
@@ -301,9 +298,10 @@ manifest-node-manager-image-windows-%:
 .PHONY: manifest-node-manager-image-windows
 manifest-node-manager-image-windows:
 	set -x
-	docker manifest create $(NODE_MANAGER_IMAGE) --amend $(NODE_MANAGER_LINUX_FULL_IMAGE_PREFIX)-$(ARCH) --amend $(NODE_MANAGER_WINDOWS_FULL_IMAGE_PREFIX)-$(WINDOWS_OSVERSION)-$(ARCH)
+	docker manifest create --amend $(NODE_MANAGER_IMAGE) $(NODE_MANAGER_LINUX_FULL_IMAGE_PREFIX)-$(ARCH) $(NODE_MANAGER_WINDOWS_FULL_IMAGE_PREFIX)-$(WINDOWS_OSVERSION)-$(ARCH)
 	docker manifest annotate --os linux --arch $(ARCH) $(NODE_MANAGER_IMAGE) $(NODE_MANAGER_LINUX_FULL_IMAGE_PREFIX)-$(ARCH)
-	docker manifest annotate --os windows --arch $(ARCH) --os-version $(WINDOWS_OSVERSION) $(NODE_MANAGER_IMAGE) $(NODE_MANAGER_WINDOWS_FULL_IMAGE_PREFIX)-$(WINDOWS_OSVERSION)-$(ARCH)
+	full_version=`docker manifest inspect ${BASE.windows}:$(WINDOWS_OSVERSION) | jq -r '.manifests[0].platform["os.version"]'`; \
+	docker manifest annotate --os windows --arch $(ARCH) --os-version $${full_version} $(NODE_MANAGER_IMAGE) $(NODE_MANAGER_WINDOWS_FULL_IMAGE_PREFIX)-$(WINDOWS_OSVERSION)-$(ARCH)
 	docker manifest push --purge $(NODE_MANAGER_IMAGE)
 
 ## --------------------------------------
@@ -359,7 +357,7 @@ test-e2e-capz: ## Run k8s e2e tests with capz
 	hack/test_k8s_e2e_capz.sh $(TEST_E2E_ARGS)
 
 test-ccm-e2e: ## Run cloud provider e2e tests.
-	go test ./tests/e2e/ -timeout 0 -v -ginkgo.v $(CCM_E2E_ARGS)
+	hack/test-ccm-e2e.sh
 
 .PHONY: clean
 clean: ## Cleanup local builds.

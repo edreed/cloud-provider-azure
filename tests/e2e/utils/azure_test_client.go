@@ -25,7 +25,7 @@ import (
 	azauth "github.com/Azure/azure-sdk-for-go/services/authorization/mgmt/2015-07-01/authorization"
 	azcompute "github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
 	acr "github.com/Azure/azure-sdk-for-go/services/containerregistry/mgmt/2019-05-01/containerregistry"
-	aznetwork "github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	aznetwork "github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	azresources "github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2018-05-01/resources"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
@@ -141,6 +141,11 @@ func (tc *AzureTestClient) CreateSecurityGroupsClient() *aznetwork.SecurityGroup
 // createPublicIPAddressesClient generates virtual network client with the same baseclient as azure test client
 func (tc *AzureTestClient) createPublicIPAddressesClient() *aznetwork.PublicIPAddressesClient {
 	return &aznetwork.PublicIPAddressesClient{BaseClient: tc.networkClient}
+}
+
+// createPublicIPPrefixesClient generates virtual network client with the same baseclient as azure test client
+func (tc *AzureTestClient) createPublicIPPrefixesClient() *aznetwork.PublicIPPrefixesClient {
+	return &aznetwork.PublicIPPrefixesClient{BaseClient: tc.networkClient}
 }
 
 // createLoadBalancerClient generates loadbalancer client with the same baseclient as azure test client

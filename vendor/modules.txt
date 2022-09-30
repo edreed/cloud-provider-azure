@@ -375,7 +375,7 @@ golang.org/x/net/websocket
 ## explicit; go 1.11
 golang.org/x/oauth2
 golang.org/x/oauth2/internal
-# golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4
+# golang.org/x/sync v0.0.0-20220929204114-8fcdb60fdcc0
 ## explicit
 golang.org/x/sync/singleflight
 # golang.org/x/sys v0.0.0-20220728004956-3c1f35247d10

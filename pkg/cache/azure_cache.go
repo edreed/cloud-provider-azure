@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // AzureCacheReadType defines the read type for cache data
@@ -54,7 +56,7 @@ type AzureCacheEntry struct {
 // TimedCache is a cache with TTL.
 type TimedCache struct {
 	store  sync.Map
-	lock   sync.Mutex
+	group  singleflight.Group
 	getter GetFunc
 	ttl    time.Duration
 }
@@ -103,19 +105,24 @@ func (t *TimedCache) Get(key string, crt AzureCacheReadType) (interface{}, error
 			return entry.Data, nil
 		}
 	}
+
 	// Data is not cached yet, cache data is expired or requested force refresh
-	// cache it by getter. entry is locked before getting to ensure concurrent
-	// gets don't result in multiple ARM calls.
-	data, err := t.getter(key)
-	if err != nil {
-		return nil, err
-	}
+	// cache it by getter. A singleflight.Group is used to coalesce multiple calls
+	// into one to prevent both concurrent and storms of sequential ARM calls.
+	data, err, _ := t.group.Do(key, func() (interface{}, error) {
+		data, err := t.getter(key)
+		if err != nil {
+			return nil, err
+		}
 
-	// set the data in cache and also set the last update time
-	// to now as the data was recently fetched
-	t.Set(key, data)
+		// set the data in cache and also set the last update time
+		// to now as the data was recently fetched
+		t.Set(key, data)
 
-	return data, nil
+		return data, nil
+	})
+
+	return data, err
 }
 
 // Delete removes an item from the cache.

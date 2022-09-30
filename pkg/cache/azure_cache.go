@@ -53,10 +53,10 @@ type AzureCacheEntry struct {
 
 // TimedCache is a cache with TTL.
 type TimedCache struct {
-	Store  sync.Map
-	Lock   sync.Mutex
-	Getter GetFunc
-	TTL    time.Duration
+	store  sync.Map
+	lock   sync.Mutex
+	getter GetFunc
+	ttl    time.Duration
 }
 
 // NewTimedcache creates a new TimedCache.
@@ -66,14 +66,27 @@ func NewTimedcache(ttl time.Duration, getter GetFunc) (*TimedCache, error) {
 	}
 
 	return &TimedCache{
-		Getter: getter,
-		TTL:    ttl,
+		getter: getter,
+		ttl:    ttl,
 	}, nil
+}
+
+// TryGet returns the value stored in the cache for a key, or nil if no
+// value is present.
+// The ok result indicates whether value was found in the cache.
+func (t *TimedCache) TryGet(key string) (interface{}, bool) {
+	if entry, ok := t.store.Load(key); ok {
+		if data := entry.(*AzureCacheEntry).Data; data != nil {
+			return data, true
+		}
+	}
+
+	return nil, false
 }
 
 // Get returns the requested item by key.
 func (t *TimedCache) Get(key string, crt AzureCacheReadType) (interface{}, error) {
-	rawEntry, _ := t.Store.LoadOrStore(key, &AzureCacheEntry{
+	rawEntry, _ := t.store.LoadOrStore(key, &AzureCacheEntry{
 		Key:  key,
 		Data: nil,
 	})
@@ -86,14 +99,14 @@ func (t *TimedCache) Get(key string, crt AzureCacheReadType) (interface{}, error
 			return entry.Data, nil
 		}
 		// if cached data is not expired, return cached data
-		if crt == CacheReadTypeDefault && time.Since(entry.CreatedOn) < t.TTL {
+		if crt == CacheReadTypeDefault && time.Since(entry.CreatedOn) < t.ttl {
 			return entry.Data, nil
 		}
 	}
 	// Data is not cached yet, cache data is expired or requested force refresh
 	// cache it by getter. entry is locked before getting to ensure concurrent
 	// gets don't result in multiple ARM calls.
-	data, err := t.Getter(key)
+	data, err := t.getter(key)
 	if err != nil {
 		return nil, err
 	}
@@ -107,14 +120,14 @@ func (t *TimedCache) Get(key string, crt AzureCacheReadType) (interface{}, error
 
 // Delete removes an item from the cache.
 func (t *TimedCache) Delete(key string) error {
-	t.Store.Delete(key)
+	t.store.Delete(key)
 	return nil
 }
 
 // Set sets the data cache for the key.
 // It is only used for testing.
 func (t *TimedCache) Set(key string, data interface{}) {
-	t.Store.Store(key, &AzureCacheEntry{
+	t.store.Store(key, &AzureCacheEntry{
 		Key:       key,
 		Data:      data,
 		CreatedOn: time.Now().UTC(),

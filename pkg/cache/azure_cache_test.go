@@ -68,6 +68,25 @@ func newFakeCache(t *testing.T) (*fakeDataSource, *TimedCache) {
 	return dataSource, cache
 }
 
+func TestCacheTryGet(t *testing.T) {
+	val := &fakeDataObj{}
+
+	dataSource, cache := newFakeCache(t)
+	dataSource.set(map[string]*fakeDataObj{"key1": val})
+
+	ret1, ok := cache.TryGet("key1")
+	assert.False(t, ok)
+	assert.Nil(t, ret1)
+
+	getRet, err := cache.Get("key1", CacheReadTypeDefault)
+	assert.NoError(t, err)
+	assert.Equal(t, val, getRet)
+
+	ret2, ok := cache.TryGet("key1")
+	assert.True(t, ok)
+	assert.Equal(t, val, ret2)
+}
+
 func TestCacheGet(t *testing.T) {
 	val := &fakeDataObj{}
 	cases := []struct {

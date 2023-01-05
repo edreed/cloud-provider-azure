@@ -311,27 +311,17 @@ func isNodeInVMSSVMCache(nodeName string, vmssVMCache *azcache.TimedCache) bool 
 
 	var isInCache bool
 
-	vmssVMCache.Lock.Lock()
-	defer vmssVMCache.Lock.Unlock()
-
-	for _, entry := range vmssVMCache.Store.List() {
-		if entry != nil {
-			data := entry.(*azcache.AzureCacheEntry).Data
-			if data != nil {
-				data.(*sync.Map).Range(func(vmName, _ interface{}) bool {
-					if vmName != nil && vmName.(string) == nodeName {
-						isInCache = true
-						return false
-					}
-					return true
-				})
+	vmssVMCache.Range(func(key string, data interface{}) bool {
+		data.(*sync.Map).Range(func(vmName, _ interface{}) bool {
+			if vmName != nil && vmName.(string) == nodeName {
+				isInCache = true
+				return false
 			}
-		}
+			return true
+		})
 
-		if isInCache {
-			break
-		}
-	}
+		return !isInCache
+	})
 
 	return isInCache
 }

@@ -104,7 +104,7 @@ func (ss *ScaleSet) newVMSSCache() (*azcache.TimedCache, error) {
 
 		if resourceGroupNotFound {
 			// gc vmss vm cache when there is resource group not found
-			vmssVMKeys := ss.vmssVMCache.Store.ListKeys()
+			vmssVMKeys := ss.vmssVMCache.ListKeys()
 			for _, cacheKey := range vmssVMKeys {
 				vmssName := cacheKey[strings.LastIndex(cacheKey, "/")+1:]
 				if _, ok := localCache.Load(vmssName); !ok {
@@ -185,19 +185,16 @@ func (ss *ScaleSet) newVMSSVirtualMachinesCache() (*azcache.TimedCache, error) {
 
 		oldCache := make(map[string]*vmssVirtualMachinesEntry)
 
-		entry, exists, err := ss.vmssVMCache.Store.GetByKey(cacheKey)
+		cached, err := ss.vmssVMCache.TryGet(cacheKey)
 		if err != nil {
 			return nil, err
 		}
-		if exists {
-			cached := entry.(*azcache.AzureCacheEntry).Data
-			if cached != nil {
-				virtualMachines := cached.(*sync.Map)
-				virtualMachines.Range(func(key, value interface{}) bool {
-					oldCache[key.(string)] = value.(*vmssVirtualMachinesEntry)
-					return true
-				})
-			}
+		if cached != nil {
+			virtualMachines := cached.(*sync.Map)
+			virtualMachines.Range(func(key, value interface{}) bool {
+				oldCache[key.(string)] = value.(*vmssVirtualMachinesEntry)
+				return true
+			})
 		}
 
 		result := strings.Split(cacheKey, "/")

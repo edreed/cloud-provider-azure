@@ -44,28 +44,28 @@ const (
 // GetFunc defines a getter function for timedCache.
 type GetFunc func(key string) (interface{}, error)
 
-// AzureCacheEntry is the internal structure stores inside TTLStore.
-type AzureCacheEntry struct {
-	Key  string
-	Data interface{}
+// azureCacheEntry is the internal structure stores inside TTLStore.
+type azureCacheEntry struct {
+	key  string
+	data interface{}
 
 	// The lock to ensure not updating same entry simultaneously.
-	Lock sync.Mutex
+	lock sync.Mutex
 	// time when entry was fetched and created
-	CreatedOn time.Time
+	createdOn time.Time
 }
 
 // cacheKeyFunc defines the key function required in TTLStore.
 func cacheKeyFunc(obj interface{}) (string, error) {
-	return obj.(*AzureCacheEntry).Key, nil
+	return obj.(*azureCacheEntry).key, nil
 }
 
 // TimedCache is a cache with TTL.
 type TimedCache struct {
-	Store  cache.Store
-	Lock   sync.Mutex
-	Getter GetFunc
-	TTL    time.Duration
+	store  cache.Store
+	lock   sync.Mutex
+	getter GetFunc
+	ttl    time.Duration
 }
 
 // NewTimedcache creates a new TimedCache.
@@ -75,48 +75,48 @@ func NewTimedcache(ttl time.Duration, getter GetFunc) (*TimedCache, error) {
 	}
 
 	return &TimedCache{
-		Getter: getter,
+		getter: getter,
 		// switch to using NewStore instead of NewTTLStore so that we can
 		// reuse entries for calls that are fine with reading expired/stalled data.
 		// with NewTTLStore, entries are not returned if they have already expired.
-		Store: cache.NewStore(cacheKeyFunc),
-		TTL:   ttl,
+		store: cache.NewStore(cacheKeyFunc),
+		ttl:   ttl,
 	}, nil
 }
 
 // getInternal returns AzureCacheEntry by key. If the key is not cached yet,
 // it returns a AzureCacheEntry with nil data.
-func (t *TimedCache) getInternal(key string) (*AzureCacheEntry, error) {
-	entry, exists, err := t.Store.GetByKey(key)
+func (t *TimedCache) getInternal(key string) (*azureCacheEntry, error) {
+	entry, exists, err := t.store.GetByKey(key)
 	if err != nil {
 		return nil, err
 	}
 	// if entry exists, return the entry
 	if exists {
-		return entry.(*AzureCacheEntry), nil
+		return entry.(*azureCacheEntry), nil
 	}
 
 	// lock here to ensure if entry doesn't exist, we add a new entry
 	// avoiding overwrites
-	t.Lock.Lock()
-	defer t.Lock.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	// Another goroutine might have written the same key.
-	entry, exists, err = t.Store.GetByKey(key)
+	entry, exists, err = t.store.GetByKey(key)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
-		return entry.(*AzureCacheEntry), nil
+		return entry.(*azureCacheEntry), nil
 	}
 
 	// Still not found, add new entry with nil data.
 	// Note the data will be filled later by getter.
-	newEntry := &AzureCacheEntry{
-		Key:  key,
-		Data: nil,
+	newEntry := &azureCacheEntry{
+		key:  key,
+		data: nil,
 	}
-	_ = t.Store.Add(newEntry)
+	_ = t.store.Add(newEntry)
 	return newEntry, nil
 }
 
@@ -127,63 +127,91 @@ func (t *TimedCache) Get(key string, crt AzureCacheReadType) (interface{}, error
 		return nil, err
 	}
 
-	entry.Lock.Lock()
-	defer entry.Lock.Unlock()
+	entry.lock.Lock()
+	defer entry.lock.Unlock()
 
 	// entry exists and if cache is not force refreshed
-	if entry.Data != nil && crt != CacheReadTypeForceRefresh {
+	if entry.data != nil && crt != CacheReadTypeForceRefresh {
 		// allow unsafe read, so return data even if expired
 		if crt == CacheReadTypeUnsafe {
-			return entry.Data, nil
+			return entry.data, nil
 		}
 		// if cached data is not expired, return cached data
-		if crt == CacheReadTypeDefault && time.Since(entry.CreatedOn) < t.TTL {
-			return entry.Data, nil
+		if crt == CacheReadTypeDefault && time.Since(entry.createdOn) < t.ttl {
+			return entry.data, nil
 		}
 	}
 	// Data is not cached yet, cache data is expired or requested force refresh
 	// cache it by getter. entry is locked before getting to ensure concurrent
 	// gets don't result in multiple ARM calls.
-	data, err := t.Getter(key)
+	data, err := t.getter(key)
 	if err != nil {
 		return nil, err
 	}
 
 	// set the data in cache and also set the last update time
 	// to now as the data was recently fetched
-	entry.Data = data
-	entry.CreatedOn = time.Now().UTC()
+	entry.data = data
+	entry.createdOn = time.Now().UTC()
 
-	return entry.Data, nil
+	return entry.data, nil
+}
+
+// TryGet returns the entry if it exists and nil otherwise.
+func (t *TimedCache) TryGet(key string) (interface{}, error) {
+	entry, _, err := t.store.GetByKey(key)
+	if entry == nil || err != nil {
+		return nil, err
+	}
+
+	return entry.(*azureCacheEntry).data, nil
 }
 
 // Delete removes an item from the cache.
 func (t *TimedCache) Delete(key string) error {
-	return t.Store.Delete(&AzureCacheEntry{
-		Key: key,
+	return t.store.Delete(&azureCacheEntry{
+		key: key,
 	})
 }
 
 // Set sets the data cache for the key.
 // It is only used for testing.
 func (t *TimedCache) Set(key string, data interface{}) {
-	_ = t.Store.Add(&AzureCacheEntry{
-		Key:       key,
-		Data:      data,
-		CreatedOn: time.Now().UTC(),
+	_ = t.store.Add(&azureCacheEntry{
+		key:       key,
+		data:      data,
+		createdOn: time.Now().UTC(),
 	})
 }
 
 // Update updates the data cache for the key.
 func (t *TimedCache) Update(key string, data interface{}) {
-	_ = t.Store.Update(&AzureCacheEntry{
-		Key:       key,
-		Data:      data,
-		CreatedOn: time.Now().UTC(),
+	_ = t.store.Update(&azureCacheEntry{
+		key:       key,
+		data:      data,
+		createdOn: time.Now().UTC(),
 	})
 }
 
 // ListKeys returns a list of all of the keys of objects currently in the cache.
 func (t *TimedCache) ListKeys() []string {
-	return t.Store.ListKeys()
+	return t.store.ListKeys()
+}
+
+// Range calls f sequentially for each value present in the cache. If f returns
+// false, range stops the iteration.
+func (t *TimedCache) Range(f func(key string, value interface{}) bool) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	for _, entry := range t.store.List() {
+		if entry != nil {
+			cached := entry.(*azureCacheEntry)
+			if cached.data != nil {
+				if !f(cached.key, cached.data) {
+					break
+				}
+			}
+		}
+	}
 }

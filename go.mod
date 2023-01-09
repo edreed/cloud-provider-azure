@@ -24,7 +24,7 @@ require (
 	golang.org/x/sys v0.4.0
 	golang.org/x/text v0.6.0
 	golang.org/x/time v0.3.0
-	google.golang.org/grpc v1.49.0
+	google.golang.org/grpc v1.51.0
 	k8s.io/api v0.26.0
 	k8s.io/apimachinery v0.26.0
 	k8s.io/apiserver v0.26.0

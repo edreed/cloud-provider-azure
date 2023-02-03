@@ -267,6 +267,21 @@ func (c *controllerCommon) AttachDisk(ctx context.Context, async bool, diskName,
 		return -1, err
 	}
 
+	defer func() {
+		// remove temp lun if there is an error
+		if err != nil {
+			var tempLuns *TempLunMapping
+			if entry, ok := c.tempLunMap.Load(string(nodeName)); ok {
+				tempLuns = entry.(*TempLunMapping)
+				tempLuns.lock.Lock()
+				defer tempLuns.lock.Unlock()
+			}
+			if tempLuns != nil && tempLuns.lunMap != nil {
+				delete(tempLuns.lunMap, diskToAttach.diskURI)
+			}
+		}
+	}()
+
 	resourceGroup, err := c.cloud.GetNodeResourceGroup(string(nodeName))
 	if err != nil {
 		resourceGroup = c.cloud.ResourceGroup
@@ -548,19 +563,13 @@ func (c *controllerCommon) GetDiskLun(diskName, diskURI string, nodeName types.N
 // SetDiskLun finds an unused lun and allocates lun for disk pending attach.
 // Return err if not available lun cannot be found.
 func (c *controllerCommon) SetDiskLun(nodeName types.NodeName, diskPendingAttach *AttachDiskParams) error {
+	if diskPendingAttach == nil {
+		return fmt.Errorf("diskPendingAttach is nil(%v)", diskPendingAttach)
+	}
 	uri := diskPendingAttach.diskURI
 	opt := diskPendingAttach.options
 	if opt == nil {
 		return fmt.Errorf("unexpected nil pointer in diskPendingAttach(%v)", diskPendingAttach)
-	}
-
-	entry, _ := c.tempLunMap.LoadOrStore(string(nodeName), new(TempLunMapping))
-	tempLuns := entry.(*TempLunMapping)
-	tempLuns.lock.Lock()
-	defer tempLuns.lock.Unlock()
-
-	if tempLuns.lunMap == nil {
-		tempLuns.lunMap = make(map[string]int32)
 	}
 
 	disks, _, err := c.GetNodeDataDisks(nodeName, azcache.CacheReadTypeDefault)
@@ -568,6 +577,14 @@ func (c *controllerCommon) SetDiskLun(nodeName types.NodeName, diskPendingAttach
 		klog.Errorf("error of getting data disks for node %s: %v", nodeName, err)
 		return err
 	}
+
+	entry, ok := c.tempLunMap.Load(string(nodeName))
+	if !ok {
+		entry, _ = c.tempLunMap.LoadOrStore(string(nodeName), &TempLunMapping{lunMap: make(map[string]int32)})
+	}
+	tempLuns := entry.(*TempLunMapping)
+	tempLuns.lock.Lock()
+	defer tempLuns.lock.Unlock()
 
 	allLuns := make([]bool, maxLUN)
 	for _, disk := range disks {

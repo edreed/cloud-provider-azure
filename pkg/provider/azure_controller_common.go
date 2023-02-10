@@ -109,8 +109,13 @@ type controllerCommon struct {
 }
 
 type TempLunMapping struct {
-	lunMap map[string]int32 // <diskURI, LUN>
+	lunMap map[string]*Lun // <diskURI, Lun>
 	lock   sync.Mutex
+}
+
+type Lun struct {
+	lun             int32
+	allocationCount int32
 }
 
 // AttachDiskOptions attach disk options
@@ -276,8 +281,11 @@ func (c *controllerCommon) AttachDisk(ctx context.Context, async bool, diskName,
 				tempLuns.lock.Lock()
 				defer tempLuns.lock.Unlock()
 			}
-			if tempLuns != nil && tempLuns.lunMap != nil {
-				delete(tempLuns.lunMap, diskToAttach.diskURI)
+			if tempLuns != nil && tempLuns.lunMap != nil && tempLuns.lunMap[diskToAttach.diskURI] != nil {
+				tempLuns.lunMap[diskToAttach.diskURI].allocationCount--
+				if tempLuns.lunMap[diskToAttach.diskURI].allocationCount == 0 {
+					delete(tempLuns.lunMap, diskToAttach.diskURI)
+				}
 			}
 		}
 	}()
@@ -391,8 +399,11 @@ func (c *controllerCommon) attachDiskBatchToNode(ctx context.Context, subscripti
 
 		for i, disk := range disksToAttach {
 			lunChans[i] <- attachDiskResult{lun: diskMap[disk.diskURI].lun, err: err}
-			if tempLuns != nil && tempLuns.lunMap != nil {
-				delete(tempLuns.lunMap, disk.diskURI)
+			if tempLuns != nil && tempLuns.lunMap != nil && tempLuns.lunMap[disk.diskURI] != nil {
+				tempLuns.lunMap[disk.diskURI].allocationCount--
+				if tempLuns.lunMap[disk.diskURI].allocationCount == 0 {
+					delete(tempLuns.lunMap, disk.diskURI)
+				}
 			}
 		}
 	}
@@ -580,7 +591,7 @@ func (c *controllerCommon) SetDiskLun(nodeName types.NodeName, diskPendingAttach
 
 	entry, ok := c.tempLunMap.Load(string(nodeName))
 	if !ok {
-		entry, _ = c.tempLunMap.LoadOrStore(string(nodeName), &TempLunMapping{lunMap: make(map[string]int32)})
+		entry, _ = c.tempLunMap.LoadOrStore(string(nodeName), &TempLunMapping{lunMap: make(map[string]*Lun)})
 	}
 	tempLuns := entry.(*TempLunMapping)
 	tempLuns.lock.Lock()
@@ -598,10 +609,11 @@ func (c *controllerCommon) SetDiskLun(nodeName types.NodeName, diskPendingAttach
 	}
 
 	for diskURI, lun := range tempLuns.lunMap {
-		if lun >= 0 && lun < maxLUN {
-			allLuns[lun] = true
+		if lun.lun >= 0 && lun.lun < maxLUN {
+			allLuns[lun.lun] = true
 			if diskURI == uri {
-				opt.lun = lun
+				opt.lun = lun.lun
+				lun.allocationCount++
 				return nil
 			}
 		}
@@ -614,7 +626,7 @@ func (c *controllerCommon) SetDiskLun(nodeName types.NodeName, diskPendingAttach
 			if opt.lunCh != nil {
 				opt.lunCh <- opt.lun
 			}
-			tempLuns.lunMap[uri] = opt.lun
+			tempLuns.lunMap[uri] = &Lun{lun: opt.lun, allocationCount: 1}
 			return nil
 		}
 	}

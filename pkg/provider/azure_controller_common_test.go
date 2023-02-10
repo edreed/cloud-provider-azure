@@ -745,6 +745,13 @@ func TestSetDiskLun(t *testing.T) {
 			expectedLun: []int32{3, 4},
 		},
 		{
+			desc:        "same disk URI should be assigned same lun",
+			nodeName:    "nodeName",
+			disks:       []*AttachDiskParams{{diskURI: "diskURI", options: &AttachDiskOptions{}}, {diskURI: "diskURI", options: &AttachDiskOptions{}}},
+			expectedErr: false,
+			expectedLun: []int32{3, 3},
+		},
+		{
 			desc:            "LUN -1 and error shall be returned if there's no available LUN",
 			nodeName:        "nodeName",
 			disks:           []*AttachDiskParams{{diskURI: "diskURI", options: &AttachDiskOptions{}}},

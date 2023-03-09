@@ -370,6 +370,18 @@ func (c *controllerCommon) attachDiskBatchToNode(ctx context.Context, subscripti
 	// err will be handled by waitForUpdateResult below
 
 	attachFn := func() {
+		var attachErr error
+
+		// Since this function may execute asynchronously to its outer function, the error returned
+		// by waitForUpdateResult cannot be shared with the outer function. We must create a separate
+		// deferred function in the inner function's scope to handle error cases.
+		defer func() {
+			// invalidate the cache if there is error in disk attach
+			if attachErr != nil {
+				_ = vmset.DeleteCacheForNode(string(nodeName))
+			}
+		}()
+
 		klog.V(2).Infof("azuredisk - trying to attach disks to node %s: %s", nodeName, diskMap)
 
 		resultCtx := ctx
@@ -388,7 +400,7 @@ func (c *controllerCommon) attachDiskBatchToNode(ctx context.Context, subscripti
 			}
 		}
 
-		err = c.waitForUpdateResult(resultCtx, vmset, nodeName, future, err, "attach_disk")
+		attachErr = c.waitForUpdateResult(resultCtx, vmset, nodeName, future, err, "attach_disk")
 
 		var tempLuns *TempLunMapping
 		if entry, ok := c.tempLunMap.Load(string(nodeName)); ok {
@@ -398,7 +410,7 @@ func (c *controllerCommon) attachDiskBatchToNode(ctx context.Context, subscripti
 		}
 
 		for i, disk := range disksToAttach {
-			lunChans[i] <- attachDiskResult{lun: diskMap[disk.diskURI].lun, err: err}
+			lunChans[i] <- attachDiskResult{lun: diskMap[disk.diskURI].lun, err: attachErr}
 			if tempLuns != nil && tempLuns.lunMap != nil && tempLuns.lunMap[disk.diskURI] != nil {
 				tempLuns.lunMap[disk.diskURI].allocationCount--
 				if tempLuns.lunMap[disk.diskURI].allocationCount == 0 {

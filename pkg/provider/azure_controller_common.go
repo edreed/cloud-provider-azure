@@ -67,9 +67,6 @@ const (
 	updateVMRetryFactor   = 3.0
 	updateVMRetrySteps    = 5
 
-	// default initial delay in milliseconds for batch disk attach/detach
-	defaultAttachDetachInitialDelayInMs = 1000
-
 	// WriteAcceleratorEnabled support for Azure Write Accelerator on Azure Disks
 	// https://docs.microsoft.com/azure/virtual-machines/windows/how-to-enable-write-accelerator
 	WriteAcceleratorEnabled = "writeacceleratorenabled"

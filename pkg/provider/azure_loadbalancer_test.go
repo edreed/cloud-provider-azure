@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/text/cases"
@@ -168,17 +168,22 @@ func TestGetLoadBalancer(t *testing.T) {
 		az := GetTestCloud(ctrl)
 		mockPIPsClient := az.PublicIPAddressesClient.(*mockpublicipclient.MockInterface)
 		if c.pipExists {
-			mockPIPsClient.EXPECT().Get(gomock.Any(), "rg", gomock.Any(), gomock.Any()).Return(network.PublicIPAddress{
-				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					IPAddress: pointer.String("1.2.3.4"),
-				}}, nil)
+			mockPIPsClient.EXPECT().List(gomock.Any(), "rg").Return([]network.PublicIPAddress{
+				{
+					Name: pointer.String("testCluster-aservice"),
+					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
+						IPAddress: pointer.String("1.2.3.4"),
+					},
+				},
+			}, nil)
 		} else {
-			mockPIPsClient.EXPECT().Get(gomock.Any(), "rg", gomock.Any(), gomock.Any()).Return(network.PublicIPAddress{}, &retry.Error{HTTPStatusCode: http.StatusNotFound})
+			mockPIPsClient.EXPECT().List(gomock.Any(), "rg").Return([]network.PublicIPAddress{}, nil).MaxTimes(2)
 		}
 		mockLBsClient := az.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
 		mockLBsClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(c.existingLBs, nil)
 
-		status, existsLB, err := az.GetLoadBalancer(context.TODO(), testClusterName, &c.service)
+		service := c.service
+		status, existsLB, err := az.GetLoadBalancer(context.TODO(), testClusterName, &service)
 		assert.Nil(t, err, "TestCase[%d]: %s", i, c.desc)
 		assert.Equal(t, c.expectedGotLB, existsLB, "TestCase[%d]: %s", i, c.desc)
 		assert.Equal(t, c.expectedStatus, status, "TestCase[%d]: %s", i, c.desc)
@@ -738,16 +743,20 @@ func TestEnsureLoadBalancerDeleted(t *testing.T) {
 	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 5)
 
 	for i, c := range tests {
-
+		service := c.service
 		if c.service.Annotations[consts.ServiceAnnotationLoadBalancerInternal] == "true" {
-			validateTestSubnet(t, az, &c.service)
+			validateTestSubnet(t, az, &service)
 		}
 
 		expectedLBs := make([]network.LoadBalancer, 0)
 		setMockLBs(az, ctrl, &expectedLBs, "service", 1, i+1, c.isInternalSvc)
 
+		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
+		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return([]network.PrivateLinkService{}, nil).MaxTimes(2)
+		az.PrivateLinkServiceClient = mockPLSClient
+
 		// create the service first.
-		lbStatus, err := az.EnsureLoadBalancer(context.TODO(), testClusterName, &c.service, clusterResources.nodes)
+		lbStatus, err := az.EnsureLoadBalancer(context.TODO(), testClusterName, &service, clusterResources.nodes)
 		if c.expectCreateError {
 			assert.NotNil(t, err, "TestCase[%d]: %s", i, c.desc)
 		} else {
@@ -764,19 +773,14 @@ func TestEnsureLoadBalancerDeleted(t *testing.T) {
 			az.LoadBalancerResourceGroup = "nil"
 		}
 		if c.flipService {
-			flippedService := flipServiceInternalAnnotation(&c.service)
+			flippedService := flipServiceInternalAnnotation(&service)
 			c.service = *flippedService
 			c.isInternalSvc = !c.isInternalSvc
 		}
 		expectedLBs = make([]network.LoadBalancer, 0)
 		setMockLBs(az, ctrl, &expectedLBs, "service", 1, i+1, c.isInternalSvc)
 
-		expectedPLS := make([]network.PrivateLinkService, 0)
-		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
-		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MaxTimes(1)
-		az.PrivateLinkServiceClient = mockPLSClient
-
-		err = az.EnsureLoadBalancerDeleted(context.TODO(), testClusterName, &c.service)
+		err = az.EnsureLoadBalancerDeleted(context.TODO(), testClusterName, &service)
 		expectedLBs = make([]network.LoadBalancer, 0)
 		mockLBsClient := mockloadbalancerclient.NewMockInterface(ctrl)
 		mockLBsClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedLBs, nil).MaxTimes(2)
@@ -1009,8 +1013,8 @@ func TestShouldReleaseExistingOwnedPublicIP(t *testing.T) {
 		ID:   pointer.String("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP"),
 		Name: pointer.String("testPIP"),
 		PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-			PublicIPAddressVersion:   network.IPVersionIPv4,
-			PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+			PublicIPAddressVersion:   network.IPv4,
+			PublicIPAllocationMethod: network.Static,
 			IPTags: &[]network.IPTag{
 				{
 					IPTagType: pointer.String("tag1"),
@@ -1171,7 +1175,8 @@ func TestShouldReleaseExistingOwnedPublicIP(t *testing.T) {
 		if c.tags != nil {
 			c.existingPip.Tags = c.tags
 		}
-		actualShouldRelease := shouldReleaseExistingOwnedPublicIP(&c.existingPip, c.lbShouldExist, c.lbIsInternal, c.isUserAssignedPIP, c.desiredPipName, c.ipTagRequest)
+		existingPip := c.existingPip
+		actualShouldRelease := shouldReleaseExistingOwnedPublicIP(&existingPip, c.lbShouldExist, c.lbIsInternal, c.isUserAssignedPIP, c.desiredPipName, c.ipTagRequest)
 		assert.Equal(t, c.expectedShouldRelease, actualShouldRelease, "TestCase[%d]: %s", i, c.desc)
 	}
 }
@@ -1741,7 +1746,8 @@ func TestGetServiceLoadBalancer(t *testing.T) {
 				test.service.Annotations = test.annotations
 			}
 			az.LoadBalancerSku = test.sku
-			lb, status, exists, err := az.getServiceLoadBalancer(&test.service, testClusterName,
+			service := test.service
+			lb, status, exists, err := az.getServiceLoadBalancer(&service, testClusterName,
 				clusterResources.nodes, test.wantLB, []network.LoadBalancer{})
 			assert.Equal(t, test.expectedLB, lb)
 			assert.Equal(t, test.expectedStatus, status)
@@ -1766,7 +1772,7 @@ func TestGetServiceLoadBalancerWithExtendedLocation(t *testing.T) {
 		Location: pointer.String("westus"),
 		ExtendedLocation: &network.ExtendedLocation{
 			Name: pointer.String("microsoftlosangeles1"),
-			Type: network.ExtendedLocationTypesEdgeZone,
+			Type: network.EdgeZone,
 		},
 		LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{},
 	}
@@ -1787,7 +1793,7 @@ func TestGetServiceLoadBalancerWithExtendedLocation(t *testing.T) {
 		Location: pointer.String("westus"),
 		ExtendedLocation: &network.ExtendedLocation{
 			Name: pointer.String("microsoftlosangeles1"),
-			Type: network.ExtendedLocationTypesEdgeZone,
+			Type: network.EdgeZone,
 		},
 		LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{},
 		Sku: &network.LoadBalancerSku{
@@ -1847,7 +1853,7 @@ func TestIsFrontendIPChanged(t *testing.T) {
 			config: network.FrontendIPConfiguration{
 				Name: pointer.String("btest1-name"),
 				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
-					PrivateIPAllocationMethod: network.IPAllocationMethodStatic,
+					PrivateIPAllocationMethod: network.Static,
 				},
 			},
 			lbFrontendIPConfigName: "btest1-name",
@@ -1861,7 +1867,7 @@ func TestIsFrontendIPChanged(t *testing.T) {
 			config: network.FrontendIPConfiguration{
 				Name: pointer.String("btest1-name"),
 				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
-					PrivateIPAllocationMethod: network.IPAllocationMethodDynamic,
+					PrivateIPAllocationMethod: network.Dynamic,
 				},
 			},
 			lbFrontendIPConfigName: "btest1-name",
@@ -1891,7 +1897,7 @@ func TestIsFrontendIPChanged(t *testing.T) {
 			config: network.FrontendIPConfiguration{
 				Name: pointer.String("btest1-name"),
 				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
-					PrivateIPAllocationMethod: network.IPAllocationMethodDynamic,
+					PrivateIPAllocationMethod: network.Dynamic,
 					PrivateIPAddress:          pointer.String("1.1.1.1"),
 				},
 			},
@@ -1907,7 +1913,7 @@ func TestIsFrontendIPChanged(t *testing.T) {
 			config: network.FrontendIPConfiguration{
 				Name: pointer.String("btest1-name"),
 				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
-					PrivateIPAllocationMethod: network.IPAllocationMethodStatic,
+					PrivateIPAllocationMethod: network.Static,
 					PrivateIPAddress:          pointer.String("1.1.1.1"),
 				},
 			},
@@ -1923,7 +1929,7 @@ func TestIsFrontendIPChanged(t *testing.T) {
 			config: network.FrontendIPConfiguration{
 				Name: pointer.String("btest1-name"),
 				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
-					PrivateIPAllocationMethod: network.IPAllocationMethodStatic,
+					PrivateIPAllocationMethod: network.Static,
 					PrivateIPAddress:          pointer.String("1.1.1.2"),
 				},
 			},
@@ -2022,16 +2028,18 @@ func TestIsFrontendIPChanged(t *testing.T) {
 			mockPIPsClient := az.PublicIPAddressesClient.(*mockpublicipclient.MockInterface)
 			mockPIPsClient.EXPECT().CreateOrUpdate(gomock.Any(), "rg", gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 			for _, existingPIP := range test.existingPIPs {
-				mockPIPsClient.EXPECT().Get(gomock.Any(), "rg", *existingPIP.Name, gomock.Any()).Return(existingPIP, nil).AnyTimes()
 				err := az.PublicIPAddressesClient.CreateOrUpdate(context.TODO(), "rg", *existingPIP.Name, existingPIP)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
-			setServiceLoadBalancerIP(&test.service, test.loadBalancerIP)
+			mockPIPsClient.EXPECT().List(gomock.Any(), "rg").Return(test.existingPIPs, nil).MaxTimes(2)
+			service := test.service
+			setServiceLoadBalancerIP(&service, test.loadBalancerIP)
 			test.service.Annotations[consts.ServiceAnnotationLoadBalancerInternalSubnet] = test.annotations
+			existingPIPs := test.existingPIPs
 			flag, rerr := az.isFrontendIPChanged("testCluster", test.config,
-				&test.service, test.lbFrontendIPConfigName, &test.existingPIPs)
+				&service, test.lbFrontendIPConfigName, &existingPIPs)
 			if rerr != nil {
 				fmt.Println(rerr.Error())
 			}
@@ -2612,13 +2620,14 @@ func TestReconcileLoadBalancerRule(t *testing.T) {
 			az.Config.LoadBalancerSku = test.loadBalancerSku
 			service := test.service
 			firstPort := service.Spec.Ports[0]
+			probeProtocol := test.probeProtocol
 			if test.probeProtocol != "" {
-				service.Spec.Ports[0].AppProtocol = &test.probeProtocol
+				service.Spec.Ports[0].AppProtocol = &probeProtocol
 			}
 			if test.probePath != "" {
 				service.Annotations[consts.BuildHealthProbeAnnotationKeyForPort(firstPort.Port, consts.HealthProbeParamsRequestPath)] = test.probePath
 			}
-			probe, lbrule, err := az.getExpectedLBRules(&test.service,
+			probe, lbrule, err := az.getExpectedLBRules(&service,
 				"frontendIPConfigID", "backendPoolID", "lbname")
 
 			if test.expectedErr {
@@ -3218,7 +3227,8 @@ func TestReconcileLoadBalancer(t *testing.T) {
 			clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 3, 3)
 			setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
-			setServiceLoadBalancerIP(&test.service, "1.2.3.4")
+			service := test.service
+			setServiceLoadBalancerIP(&service, "1.2.3.4")
 
 			err := az.PublicIPAddressesClient.CreateOrUpdate(context.TODO(), "rg", "pipName", network.PublicIPAddress{
 				Name: pointer.String("pipName"),
@@ -3245,7 +3255,7 @@ func TestReconcileLoadBalancer(t *testing.T) {
 			mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
 			mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-			lb, rerr := az.reconcileLoadBalancer("testCluster", &test.service, clusterResources.nodes, test.wantLb)
+			lb, rerr := az.reconcileLoadBalancer("testCluster", &service, clusterResources.nodes, test.wantLb)
 			assert.Equal(t, test.expectedError, rerr)
 
 			if test.expectedError == nil {
@@ -3635,6 +3645,38 @@ func TestReconcileSecurityGroup(t *testing.T) {
 			},
 		},
 		{
+			desc:    "reconcileSecurityGroup shall delete shared sgs for service with azure-shared-securityrule annotations",
+			service: getTestService("test1", v1.ProtocolTCP, map[string]string{consts.ServiceAnnotationSharedSecurityRule: "true"}, true, 80),
+			existingSgs: map[string]network.SecurityGroup{"nsg": {
+				Name: pointer.String("nsg"),
+				SecurityGroupPropertiesFormat: &network.SecurityGroupPropertiesFormat{
+					SecurityRules: &[]network.SecurityRule{
+						{
+							Name: pointer.String("shared-TCP-80-Internet"),
+							SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
+								Protocol:                   network.SecurityRuleProtocol("Tcp"),
+								SourcePortRange:            pointer.String("*"),
+								DestinationPortRange:       pointer.String("80"),
+								SourceAddressPrefix:        pointer.String("Internet"),
+								DestinationAddressPrefixes: &([]string{"1.2.3.4"}),
+								Access:                     network.SecurityRuleAccess("Allow"),
+								Priority:                   pointer.Int32(500),
+								Direction:                  network.SecurityRuleDirection("Inbound"),
+							},
+						},
+					},
+				},
+			}},
+			lbIP:   pointer.String("1.2.3.4"),
+			wantLb: false,
+			expectedSg: &network.SecurityGroup{
+				Name: pointer.String("nsg"),
+				SecurityGroupPropertiesFormat: &network.SecurityGroupPropertiesFormat{
+					SecurityRules: &[]network.SecurityRule{},
+				},
+			},
+		},
+		{
 			desc:    "reconcileSecurityGroup shall create sgs with floating IP disabled",
 			service: getTestService("test1", v1.ProtocolTCP, map[string]string{consts.ServiceAnnotationDisableLoadBalancerFloatingIP: "true"}, false, 80),
 			existingSgs: map[string]network.SecurityGroup{"nsg": {
@@ -3717,7 +3759,8 @@ func TestReconcileSecurityGroup(t *testing.T) {
 				mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return([]string{"1.2.3.4", "5.6.7.8"}, []string{"fc00::1", "fc00::2"}).AnyTimes()
 				mockLBClient.EXPECT().Get(gomock.Any(), "rg", *test.lbName, gomock.Any()).Return(network.LoadBalancer{}, nil)
 			}
-			sg, err := az.reconcileSecurityGroup("testCluster", &test.service, test.lbIP, test.lbName, test.wantLb)
+			service := test.service
+			sg, err := az.reconcileSecurityGroup("testCluster", &service, test.lbIP, test.lbName, test.wantLb)
 			assert.Equal(t, test.expectedSg, sg)
 			assert.Equal(t, test.expectedError, err != nil)
 		})
@@ -3848,7 +3891,6 @@ func TestReconcilePublicIP(t *testing.T) {
 	defer ctrl.Finish()
 
 	deleteUnwantedPIPsAndCreateANewOneclientGet := func(client *mockpublicipclient.MockInterface) {
-		client.EXPECT().Get(gomock.Any(), "rg", "testCluster-atest1", gomock.Any()).Return(network.PublicIPAddress{}, &retry.Error{HTTPStatusCode: http.StatusNotFound}).Times(1)
 		client.EXPECT().Get(gomock.Any(), "rg", "testCluster-atest1", gomock.Any()).Return(network.PublicIPAddress{ID: pointer.String("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testCluster-atest1")}, nil).Times(1)
 	}
 
@@ -3949,7 +3991,7 @@ func TestReconcilePublicIP(t *testing.T) {
 				Name: pointer.String("testPIP"),
 				Tags: map[string]*string{consts.ServiceTagKey: pointer.String("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion: network.IPVersionIPv4,
+					PublicIPAddressVersion: network.IPv4,
 					IPAddress:              pointer.String("1.2.3.4"),
 				},
 			},
@@ -3988,7 +4030,7 @@ func TestReconcilePublicIP(t *testing.T) {
 				Name: pointer.String("testPIP"),
 				Tags: map[string]*string{consts.ServiceTagKey: pointer.String("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion: network.IPVersionIPv4,
+					PublicIPAddressVersion: network.IPv4,
 					IPAddress:              pointer.String("1.2.3.4"),
 				},
 			},
@@ -4030,8 +4072,8 @@ func TestReconcilePublicIP(t *testing.T) {
 				Name: pointer.String("testPIP"),
 				Tags: map[string]*string{consts.ServiceTagKey: pointer.String("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion:   network.IPVersionIPv4,
-					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+					PublicIPAddressVersion:   network.IPv4,
+					PublicIPAllocationMethod: network.Static,
 					IPTags: &[]network.IPTag{
 						{
 							IPTagType: pointer.String("tag1"),
@@ -4055,8 +4097,8 @@ func TestReconcilePublicIP(t *testing.T) {
 					Name: pointer.String("testPIP"),
 					Tags: map[string]*string{consts.ServiceTagKey: pointer.String("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-						PublicIPAddressVersion:   network.IPVersionIPv4,
-						PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+						PublicIPAddressVersion:   network.IPv4,
+						PublicIPAllocationMethod: network.Static,
 						IPTags: &[]network.IPTag{
 							{
 								IPTagType: pointer.String("tag1"),
@@ -4072,8 +4114,8 @@ func TestReconcilePublicIP(t *testing.T) {
 				Name: pointer.String("testPIP"),
 				Tags: map[string]*string{consts.ServiceTagKey: pointer.String("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion:   network.IPVersionIPv4,
-					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+					PublicIPAddressVersion:   network.IPv4,
+					PublicIPAllocationMethod: network.Static,
 					IPTags: &[]network.IPTag{
 						{
 							IPTagType: pointer.String("tag1"),
@@ -4115,7 +4157,7 @@ func TestReconcilePublicIP(t *testing.T) {
 				ID:   pointer.String("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP"),
 				Name: pointer.String("testPIP"),
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion: network.IPVersionIPv4,
+					PublicIPAddressVersion: network.IPv4,
 					IPAddress:              pointer.String("1.2.3.4"),
 				},
 			},
@@ -4156,7 +4198,6 @@ func TestReconcilePublicIP(t *testing.T) {
 				return nil
 			})
 
-			mockPIPsClient.EXPECT().List(gomock.Any(), "rg").Return(test.existingPIPs, nil)
 			if test.expectedClientGet != nil {
 				(*test.expectedClientGet)(mockPIPsClient)
 			}
@@ -4192,6 +4233,18 @@ func TestReconcilePublicIP(t *testing.T) {
 				// Clear create or update count to prepare for main execution
 				createOrUpdateCount = 0
 			}
+			lister := mockPIPsClient.EXPECT().List(gomock.Any(), "rg").AnyTimes()
+			lister.DoAndReturn(func(ctx context.Context, resourceGroupName string) (result []network.PublicIPAddress, rerr *retry.Error) {
+				m.Lock()
+				for pipName, pip := range savedPips {
+					deleted, deletedContains := deletedPips[pipName]
+					if !deletedContains || !deleted {
+						result = append(result, pip)
+					}
+				}
+				m.Unlock()
+				return
+			})
 			pip, err := az.reconcilePublicIP("testCluster", &service, "", test.wantLb)
 			if !test.expectedError {
 				assert.NoError(t, err)
@@ -4251,8 +4304,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 				ID: pointer.String("/subscriptions/subscription/resourceGroups/rg" +
 					"/providers/Microsoft.Network/publicIPAddresses/pip1"),
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion:   network.IPVersionIPv4,
-					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+					PublicIPAddressVersion:   network.IPv4,
+					PublicIPAllocationMethod: network.Static,
 				},
 				Tags: map[string]*string{},
 			},
@@ -4280,7 +4333,7 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					DNSSettings: &network.PublicIPAddressDNSSettings{
 						DomainNameLabel: pointer.String("newdns"),
 					},
-					PublicIPAddressVersion: network.IPVersionIPv4,
+					PublicIPAddressVersion: network.IPv4,
 				},
 				Tags: map[string]*string{consts.ServiceUsingDNSKey: pointer.String("default/test1")},
 			},
@@ -4303,7 +4356,7 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					"/providers/Microsoft.Network/publicIPAddresses/pip1"),
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 					DNSSettings:            nil,
-					PublicIPAddressVersion: network.IPVersionIPv4,
+					PublicIPAddressVersion: network.IPv4,
 				},
 				Tags: map[string]*string{},
 			},
@@ -4328,7 +4381,7 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					DNSSettings: &network.PublicIPAddressDNSSettings{
 						DomainNameLabel: pointer.String("previousdns"),
 					},
-					PublicIPAddressVersion: network.IPVersionIPv4,
+					PublicIPAddressVersion: network.IPv4,
 				},
 			},
 		},
@@ -4349,8 +4402,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					DNSSettings: &network.PublicIPAddressDNSSettings{
 						DomainNameLabel: pointer.String("newdns"),
 					},
-					PublicIPAllocationMethod: network.IPAllocationMethodDynamic,
-					PublicIPAddressVersion:   network.IPVersionIPv6,
+					PublicIPAllocationMethod: network.Dynamic,
+					PublicIPAddressVersion:   network.IPv6,
 				},
 				Tags: map[string]*string{consts.ServiceUsingDNSKey: pointer.String("default/test1")},
 			},
@@ -4377,8 +4430,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					DNSSettings: &network.PublicIPAddressDNSSettings{
 						DomainNameLabel: pointer.String("newdns"),
 					},
-					PublicIPAllocationMethod: network.IPAllocationMethodDynamic,
-					PublicIPAddressVersion:   network.IPVersionIPv6,
+					PublicIPAllocationMethod: network.Dynamic,
+					PublicIPAddressVersion:   network.IPv6,
 				},
 				Tags: map[string]*string{
 					"k8s-azure-dns-label-service": pointer.String("default/test1"),
@@ -4398,8 +4451,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					DNSSettings: &network.PublicIPAddressDNSSettings{
 						DomainNameLabel: pointer.String("previousdns"),
 					},
-					PublicIPAllocationMethod: network.IPAllocationMethodDynamic,
-					PublicIPAddressVersion:   network.IPVersionIPv4,
+					PublicIPAllocationMethod: network.Dynamic,
+					PublicIPAddressVersion:   network.IPv4,
 				},
 			}},
 			expectedPIP: &network.PublicIPAddress{
@@ -4410,8 +4463,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					DNSSettings: &network.PublicIPAddressDNSSettings{
 						DomainNameLabel: pointer.String("newdns"),
 					},
-					PublicIPAllocationMethod: network.IPAllocationMethodDynamic,
-					PublicIPAddressVersion:   network.IPVersionIPv4,
+					PublicIPAllocationMethod: network.Dynamic,
+					PublicIPAddressVersion:   network.IPv4,
 				},
 				Tags: map[string]*string{
 					"k8s-azure-dns-label-service": pointer.String("default/test1"),
@@ -4450,8 +4503,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 						DNSSettings: &network.PublicIPAddressDNSSettings{
 							DomainNameLabel: pointer.String("test"),
 						},
-						PublicIPAllocationMethod: network.IPAllocationMethodStatic,
-						PublicIPAddressVersion:   network.IPVersionIPv4,
+						PublicIPAllocationMethod: network.Static,
+						PublicIPAddressVersion:   network.IPv4,
 					},
 				},
 			},
@@ -4467,8 +4520,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 					DNSSettings: &network.PublicIPAddressDNSSettings{
 						DomainNameLabel: pointer.String("test"),
 					},
-					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
-					PublicIPAddressVersion:   network.IPVersionIPv4,
+					PublicIPAllocationMethod: network.Static,
+					PublicIPAddressVersion:   network.IPv4,
 				},
 			},
 		},
@@ -4482,8 +4535,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 				ID: pointer.String("/subscriptions/subscription/resourceGroups/rg" +
 					"/providers/Microsoft.Network/publicIPAddresses/pip1"),
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion:   network.IPVersionIPv4,
-					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+					PublicIPAddressVersion:   network.IPv4,
+					PublicIPAllocationMethod: network.Static,
 				},
 				Tags: map[string]*string{},
 			},
@@ -4497,8 +4550,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 				{
 					Name: pointer.String("pip1"),
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-						PublicIPAddressVersion:   network.IPVersionIPv6,
-						PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+						PublicIPAddressVersion:   network.IPv6,
+						PublicIPAllocationMethod: network.Static,
 					},
 				},
 			},
@@ -4507,8 +4560,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 				ID: pointer.String("/subscriptions/subscription/resourceGroups/rg" +
 					"/providers/Microsoft.Network/publicIPAddresses/pip1"),
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion:   network.IPVersionIPv6,
-					PublicIPAllocationMethod: network.IPAllocationMethodDynamic,
+					PublicIPAddressVersion:   network.IPv6,
+					PublicIPAllocationMethod: network.Static,
 				},
 				Tags: map[string]*string{},
 			},
@@ -4523,8 +4576,8 @@ func TestEnsurePublicIPExists(t *testing.T) {
 				ID: pointer.String("/subscriptions/subscription/resourceGroups/rg" +
 					"/providers/Microsoft.Network/publicIPAddresses/pip1"),
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion:   network.IPVersionIPv4,
-					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
+					PublicIPAddressVersion:   network.IPv4,
+					PublicIPAllocationMethod: network.Static,
 				},
 			},
 			additionalAnnotations: map[string]string{
@@ -4548,35 +4601,40 @@ func TestEnsurePublicIPExists(t *testing.T) {
 				mockPIPsClient.EXPECT().CreateOrUpdate(gomock.Any(), "rg", gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, resourceGroupName string, publicIPAddressName string, parameters network.PublicIPAddress) *retry.Error {
 					if len(test.existingPIPs) != 0 {
 						test.existingPIPs[0] = parameters
+					} else {
+						test.existingPIPs = append(test.existingPIPs, parameters)
 					}
 					return nil
 				}).AnyTimes()
 			}
 			mockPIPsClient.EXPECT().Get(gomock.Any(), "rg", "pip1", gomock.Any()).DoAndReturn(func(ctx context.Context, resourceGroupName string, publicIPAddressName string, expand string) (network.PublicIPAddress, *retry.Error) {
-				var basicPIP network.PublicIPAddress
+				return test.existingPIPs[0], nil
+			}).MaxTimes(1)
+			mockPIPsClient.EXPECT().List(gomock.Any(), "rg").DoAndReturn(func(ctx context.Context, resourceGroupName string) ([]network.PublicIPAddress, *retry.Error) {
+				var basicPIP *network.PublicIPAddress
 				if len(test.existingPIPs) == 0 {
-					basicPIP = network.PublicIPAddress{
+					basicPIP = &network.PublicIPAddress{
 						Name: pointer.String("pip1"),
 					}
 				} else {
-					basicPIP = test.existingPIPs[0]
+					basicPIP = &test.existingPIPs[0]
 				}
 
 				basicPIP.ID = pointer.String("/subscriptions/subscription/resourceGroups/rg" +
 					"/providers/Microsoft.Network/publicIPAddresses/pip1")
 
 				if basicPIP.PublicIPAddressPropertiesFormat == nil {
-					return basicPIP, nil
+					return []network.PublicIPAddress{*basicPIP}, nil
 				}
 
 				if test.isIPv6 {
-					basicPIP.PublicIPAddressPropertiesFormat.PublicIPAddressVersion = network.IPVersionIPv6
-					basicPIP.PublicIPAllocationMethod = network.IPAllocationMethodDynamic
+					basicPIP.PublicIPAddressPropertiesFormat.PublicIPAddressVersion = network.IPv6
+					basicPIP.PublicIPAllocationMethod = network.Dynamic
 				} else {
-					basicPIP.PublicIPAddressPropertiesFormat.PublicIPAddressVersion = network.IPVersionIPv4
+					basicPIP.PublicIPAddressPropertiesFormat.PublicIPAddressVersion = network.IPv4
 				}
 
-				return basicPIP, nil
+				return []network.PublicIPAddress{*basicPIP}, nil
 			}).AnyTimes()
 
 			pip, err := az.ensurePublicIPExists(&service, "pip1", test.inputDNSLabel, "", false, test.foundDNSLabelAnnotation)
@@ -4603,11 +4661,11 @@ func TestEnsurePublicIPExistsWithExtendedLocation(t *testing.T) {
 		Location: &az.Location,
 		ExtendedLocation: &network.ExtendedLocation{
 			Name: pointer.String("microsoftlosangeles1"),
-			Type: network.ExtendedLocationTypesEdgeZone,
+			Type: network.EdgeZone,
 		},
 		PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-			PublicIPAllocationMethod: network.IPAllocationMethodStatic,
-			PublicIPAddressVersion:   network.IPVersionIPv4,
+			PublicIPAllocationMethod: network.Static,
+			PublicIPAddressVersion:   network.IPv4,
 			ProvisioningState:        "",
 		},
 		Tags: map[string]*string{
@@ -4616,9 +4674,7 @@ func TestEnsurePublicIPExistsWithExtendedLocation(t *testing.T) {
 		},
 	}
 	mockPIPsClient := az.PublicIPAddressesClient.(*mockpublicipclient.MockInterface)
-	first := mockPIPsClient.EXPECT().Get(gomock.Any(), "rg", "pip1", gomock.Any()).Return(network.PublicIPAddress{}, &retry.Error{
-		HTTPStatusCode: 404,
-	})
+	first := mockPIPsClient.EXPECT().List(gomock.Any(), "rg").Return([]network.PublicIPAddress{}, nil).Times(2)
 	mockPIPsClient.EXPECT().Get(gomock.Any(), "rg", "pip1", gomock.Any()).Return(*expectedPIP, nil).After(first)
 
 	mockPIPsClient.EXPECT().CreateOrUpdate(gomock.Any(), "rg", "pip1", gomock.Any()).
@@ -4626,7 +4682,7 @@ func TestEnsurePublicIPExistsWithExtendedLocation(t *testing.T) {
 			assert.NotNil(t, publicIPAddressParameters)
 			assert.NotNil(t, publicIPAddressParameters.ExtendedLocation)
 			assert.Equal(t, *publicIPAddressParameters.ExtendedLocation.Name, exLocName)
-			assert.Equal(t, publicIPAddressParameters.ExtendedLocation.Type, network.ExtendedLocationTypesEdgeZone)
+			assert.Equal(t, publicIPAddressParameters.ExtendedLocation.Type, network.EdgeZone)
 			// Edge zones don't support availability zones.
 			assert.Nil(t, publicIPAddressParameters.Zones)
 			return nil
@@ -5146,6 +5202,9 @@ func buildLBWithVMIPs(clusterName string, vmIPs []string) *network.LoadBalancer 
 		*(*lb.BackendAddressPools)[0].LoadBalancerBackendAddresses = append(*(*lb.BackendAddressPools)[0].LoadBalancerBackendAddresses, network.LoadBalancerBackendAddress{
 			LoadBalancerBackendAddressPropertiesFormat: &network.LoadBalancerBackendAddressPropertiesFormat{
 				IPAddress: &vmIP,
+				VirtualNetwork: &network.SubResource{
+					ID: pointer.String("vnet"),
+				},
 			},
 		})
 	}
@@ -5447,7 +5506,6 @@ func TestReconcileZonesForFrontendIPConfigs(t *testing.T) {
 		existingFrontendIPConfigs []network.FrontendIPConfiguration
 		existingPIP               network.PublicIPAddress
 		status                    *v1.LoadBalancerStatus
-		getPIPError               *retry.Error
 		getZoneError              *retry.Error
 		regionZonesMap            map[string][]string
 		expectedZones             *[]string
@@ -5460,7 +5518,6 @@ func TestReconcileZonesForFrontendIPConfigs(t *testing.T) {
 			service:                   getTestService("test", v1.ProtocolTCP, nil, false, 80),
 			existingFrontendIPConfigs: []network.FrontendIPConfiguration{},
 			existingPIP:               network.PublicIPAddress{Location: pointer.String("eastus")},
-			getPIPError:               &retry.Error{HTTPStatusCode: http.StatusNotFound},
 			regionZonesMap:            map[string][]string{"westus": {"1", "2", "3"}, "eastus": {"1", "2"}},
 			expectedDirty:             true,
 		},
@@ -5469,7 +5526,6 @@ func TestReconcileZonesForFrontendIPConfigs(t *testing.T) {
 			service:                   getInternalTestService("test", 80),
 			existingFrontendIPConfigs: []network.FrontendIPConfiguration{},
 			existingPIP:               network.PublicIPAddress{Location: pointer.String("eastus")},
-			getPIPError:               &retry.Error{HTTPStatusCode: http.StatusNotFound},
 			regionZonesMap:            map[string][]string{"westus": {"1", "2", "3"}, "eastus": {"1", "2"}},
 			expectedZones:             &[]string{"1", "2", "3"},
 			expectedDirty:             true,
@@ -5554,11 +5610,12 @@ func TestReconcileZonesForFrontendIPConfigs(t *testing.T) {
 			cloud.LoadBalancerSku = string(network.LoadBalancerSkuNameStandard)
 
 			lb := getTestLoadBalancer(pointer.String("lb"), pointer.String("rg"), pointer.String("testCluster"), pointer.String("testCluster"), tc.service, "standard")
-			lb.FrontendIPConfigurations = &tc.existingFrontendIPConfigs
+			existingFrontendIPConfigs := tc.existingFrontendIPConfigs
+			lb.FrontendIPConfigurations = &existingFrontendIPConfigs
 
 			mockPIPClient := cloud.PublicIPAddressesClient.(*mockpublicipclient.MockInterface)
-			mockPIPClient.EXPECT().Get(gomock.Any(), "rg", gomock.Any(), gomock.Any()).Return(tc.existingPIP, tc.getPIPError).MaxTimes(1)
-			mockPIPClient.EXPECT().Get(gomock.Any(), "rg", gomock.Any(), gomock.Any()).Return(tc.existingPIP, nil).MaxTimes(1)
+			first := mockPIPClient.EXPECT().List(gomock.Any(), "rg").Return([]network.PublicIPAddress{}, nil).MaxTimes(2)
+			mockPIPClient.EXPECT().Get(gomock.Any(), "rg", gomock.Any(), gomock.Any()).Return(tc.existingPIP, nil).MaxTimes(1).After(first)
 			mockPIPClient.EXPECT().CreateOrUpdate(gomock.Any(), "rg", gomock.Any(), gomock.Any()).Return(nil).MaxTimes(1)
 
 			subnetClient := cloud.SubnetsClient.(*mocksubnetclient.MockInterface)
@@ -5569,8 +5626,9 @@ func TestReconcileZonesForFrontendIPConfigs(t *testing.T) {
 			zoneClient.EXPECT().GetZones(gomock.Any(), gomock.Any()).Return(map[string][]string{}, tc.getZoneError).MaxTimes(1)
 			cloud.ZoneClient = zoneClient
 
-			defaultLBFrontendIPConfigName := cloud.getDefaultFrontendIPConfigName(&tc.service)
-			_, _, dirty, err := cloud.reconcileFrontendIPConfigs("testCluster", &tc.service, &lb, tc.status, true, defaultLBFrontendIPConfigName)
+			service := tc.service
+			defaultLBFrontendIPConfigName := cloud.getDefaultFrontendIPConfigName(&service)
+			_, _, dirty, err := cloud.reconcileFrontendIPConfigs("testCluster", &service, &lb, tc.status, true, defaultLBFrontendIPConfigName)
 			if tc.expectedErr == nil {
 				assert.NoError(t, err)
 			} else {
@@ -5587,9 +5645,9 @@ func TestReconcileZonesForFrontendIPConfigs(t *testing.T) {
 			if tc.expectedIP != nil {
 				assert.Equal(t, *tc.expectedIP, pointer.StringDeref((*lb.FrontendIPConfigurations)[0].PrivateIPAddress, ""))
 				if *tc.expectedIP != "" {
-					assert.Equal(t, network.IPAllocationMethodStatic, (*lb.FrontendIPConfigurations)[0].PrivateIPAllocationMethod)
+					assert.Equal(t, network.Static, (*lb.FrontendIPConfigurations)[0].PrivateIPAllocationMethod)
 				} else {
-					assert.Equal(t, network.IPAllocationMethodDynamic, (*lb.FrontendIPConfigurations)[0].PrivateIPAllocationMethod)
+					assert.Equal(t, network.Dynamic, (*lb.FrontendIPConfigurations)[0].PrivateIPAllocationMethod)
 				}
 			}
 		})
@@ -5797,8 +5855,8 @@ func TestReconcileSharedLoadBalancer(t *testing.T) {
 			}
 
 			mockVMSet := NewMockVMSet(ctrl)
-			mockVMSet.EXPECT().EnsureBackendPoolDeleted(gomock.Any(), "/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/vmss1/backendAddressPools/kubernetes", "vmss1", gomock.Any(), gomock.Any()).Return(false, nil).Times(tc.expectedDeleteCount)
-			mockVMSet.EXPECT().EnsureBackendPoolDeleted(gomock.Any(), "/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/vmss1-internal/backendAddressPools/kubernetes", "vmss1", gomock.Any(), gomock.Any()).Return(false, nil).Times(tc.expectedDeleteCount)
+			mockVMSet.EXPECT().EnsureBackendPoolDeleted(gomock.Any(), []string{"/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/vmss1/backendAddressPools/kubernetes"}, "vmss1", gomock.Any(), gomock.Any()).Return(false, nil).Times(tc.expectedDeleteCount)
+			mockVMSet.EXPECT().EnsureBackendPoolDeleted(gomock.Any(), []string{"/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/vmss1-internal/backendAddressPools/kubernetes"}, "vmss1", gomock.Any(), gomock.Any()).Return(false, nil).Times(tc.expectedDeleteCount)
 			mockVMSet.EXPECT().GetAgentPoolVMSetNames(gomock.Any()).Return(&[]string{"vmss1", "vmss2"}, nil).MaxTimes(tc.expectedGetNamesCount)
 			mockVMSet.EXPECT().GetPrimaryVMSetName().Return("vmss2").AnyTimes()
 			cloud.VMSet = mockVMSet

@@ -23,7 +23,7 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 )
 
 var (
@@ -79,6 +79,7 @@ func GetTargetNICFromList(list *[]network.Interface, targetVMNamePrefix string) 
 		return nil, nil
 	}
 	for _, nic := range *list {
+		nic := nic
 		vmNamePrefix, err := getVMNamePrefixFromNICID(*nic.ID)
 		if err != nil {
 			return nil, err
@@ -124,6 +125,7 @@ func GetNicIDsFromVMSSVM(vm compute.VirtualMachineScaleSetVM) (map[string]interf
 // GetNICByID returns the network interface with the input ID among the list
 func GetNICByID(nicID string, nicList *[]network.Interface) (*network.Interface, error) {
 	for _, nic := range *nicList {
+		nic := nic
 		if strings.EqualFold(*nic.ID, nicID) {
 			return &nic, nil
 		}

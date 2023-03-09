@@ -102,14 +102,19 @@ else
   sudo GOPATH="/home/vsts/go" make install
 fi
 popd
-if [[ -n "${RELEASE_PIPELINE:-}" ]]; then
-  rm -rf kubetest2-aks
-  go mod tidy
-  go mod vendor
-fi
 
 get_k8s_version
 echo "AKS Kubernetes version is: ${AKS_KUBERNETES_VERSION:-}"
+
+if [[ -n "${RELEASE_PIPELINE:-}" ]]; then
+  rm -rf kubetest2-aks
+  if [[ "${AKS_KUBERNETES_VERSION:-}" < "1.24" ]]; then
+    go mod tidy -compat=1.17
+  else
+    go mod tidy
+  fi
+  go mod vendor
+fi
 
 kubetest2 aks --up --rgName "${RESOURCE_GROUP:-}" \
 --location "${AZURE_LOCATION:-}" \
@@ -117,6 +122,7 @@ kubetest2 aks --up --rgName "${RESOURCE_GROUP:-}" \
 --customConfig "${CUSTOM_CONFIG_PATH}" \
 --clusterName "${CLUSTER_NAME:-}" \
 --ccmImageTag "${IMAGE_TAG:-}" \
+--casImageTag "${CUSTOM_CAS_IMAGE:-}" \
 --kubernetesImageTag "${IMAGE_TAG:-}" \
 --kubeletURL "${KUBELET_URL:-}" \
 --k8sVersion "${AKS_KUBERNETES_VERSION:-}"
@@ -145,6 +151,7 @@ fi
 
 export E2E_ON_AKS_CLUSTER=true
 if [[ "${CLUSTER_TYPE:-}" =~ "autoscaling" ]]; then
-  export LABEL_FILTER="Feature:Autoscaling || !Serial && !Slow"
+  export LABEL_FILTER=${LABEL_FILTER:-Feature:Autoscaling || !Serial && !Slow}
+  export SKIP_ARGS=${SKIP_ARGS:-""}
 fi
 make test-ccm-e2e

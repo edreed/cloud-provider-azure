@@ -37,6 +37,7 @@ import (
 	cloudprovider "k8s.io/cloud-provider"
 	volerr "k8s.io/cloud-provider/volume/errors"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/pointer"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/batch"
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
@@ -106,6 +107,10 @@ type controllerCommon struct {
 
 	// DisableUpdateCache whether disable update cache in disk attach/detach
 	DisableUpdateCache bool
+	// DisableDiskLunCheck whether disable disk lun check after disk attach/detach
+	DisableDiskLunCheck bool
+	// AttachDetachInitialDelayInMs determines initial delay in milliseconds for batch disk attach/detach
+	AttachDetachInitialDelayInMs int
 }
 
 type TempLunMapping struct {
@@ -483,6 +488,14 @@ func (c *controllerCommon) DetachDisk(ctx context.Context, diskName, diskURI str
 	if _, err := c.detachDiskProcessor.Do(ctx, batchKey, diskToDetach); err != nil {
 		klog.Errorf("azureDisk - detach disk(%s, %s) failed, err: %v", diskName, diskURI, err)
 		return err
+	}
+
+	if !c.DisableDiskLunCheck {
+		// always check disk lun after disk detach complete
+		lun, vmState, errGetLun := c.GetDiskLun(diskName, diskURI, nodeName)
+		if errGetLun == nil || !strings.Contains(errGetLun.Error(), consts.CannotFindDiskLUN) {
+			return fmt.Errorf("disk(%s) is still attached to node(%s) on lun(%d), vmState: %s, error: %w", diskURI, nodeName, lun, pointer.StringDeref(vmState, ""), errGetLun)
+		}
 	}
 
 	klog.V(2).Infof("azureDisk - detach disk(%s, %s) succeeded", diskName, diskURI)

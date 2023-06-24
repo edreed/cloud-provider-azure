@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"sigs.k8s.io/cloud-provider-azure/pkg/batch"
+	"github.com/edreed/go-batch"
 )
 
 type BatchMetricsRecorder struct {
